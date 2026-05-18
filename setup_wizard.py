@@ -47,6 +47,11 @@ OPTIONAL = {
         "https://api-dashboard.search.brave.com/",
         False,
     ),
+    "HUBSPOT_ACCESS_TOKEN": (
+        "HubSpot Free CRM Private App token — auto-sync leads as Contacts+Companies+Notes",
+        "https://app.hubspot.com/settings/integrations/private-apps (Free CRM signup at https://www.hubspot.com/products/get-started)",
+        False,
+    ),
     "GOOGLE_SERVICE_ACCOUNT_JSON": (
         "Path to a Google service-account JSON key file",
         "https://console.cloud.google.com/iam-admin/serviceaccounts",

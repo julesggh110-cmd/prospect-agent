@@ -35,6 +35,7 @@ except ImportError:  # pragma: no cover
 
 # Imported lazily to keep this module light if Lead model isn't loaded
 HEADERS = [
+    "icp_score",
     "company_name", "company_siren", "company_naf_label",
     "company_city", "company_address", "company_size", "company_website",
     "company_phone", "company_phone_conf",
@@ -48,6 +49,7 @@ HEADERS = [
     "person_linkedin", "person_linkedin_conf",
     "person_instagram", "person_instagram_conf",
     "overall_score",
+    "is_new_lead",       # filled by run_campaign via lead_store
     "dropped", "drop_reason",
 ]
 
@@ -57,6 +59,7 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         return [field.value or "", field.confidence if field.value else ""]
 
     return [
+        getattr(lead, "icp_score", "") or "",
         lead.company_name,
         lead.company_siren or "",
         lead.company_naf_label or "",
@@ -77,6 +80,7 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         *scored(lead.person_linkedin),
         *scored(lead.person_instagram),
         lead.overall_score,
+        "new" if getattr(lead, "is_new_lead", False) else "",
         "yes" if lead.dropped else "",
         lead.drop_reason or "",
     ]
@@ -116,6 +120,85 @@ def _push_to_sheet(leads: list, sheet_id: str, sa_path: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={ws.id}"
 
 
+def _write_premium_xlsx(rows: list[list], xlsx_path: Path) -> None:
+    """Write the rows to an XLSX with rich formatting.
+
+    Visuals:
+    - Header row: bold white text on dark teal background, frozen.
+    - Confidence columns (*_conf): color scale red->yellow->green based on value.
+    - URL columns (website / linkedin / instagram / facebook): clickable hyperlinks.
+    - Column widths auto-sized (capped at 60 chars).
+    - Filter enabled on header.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from openpyxl.formatting.rule import ColorScaleRule
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "leads"
+
+    header = rows[0]
+    data_rows = rows[1:]
+
+    # Identify special column groups
+    conf_cols = {i + 1 for i, h in enumerate(header) if isinstance(h, str) and h.endswith("_conf")}
+    url_cols = {
+        i + 1 for i, h in enumerate(header)
+        if isinstance(h, str) and any(k in h for k in ("website", "linkedin", "instagram", "facebook"))
+        and not h.endswith("_conf")
+    }
+
+    # Header styling
+    header_fill = PatternFill("solid", fgColor="14b8a6")  # teal
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    for col_idx, value in enumerate(header, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=value)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="left", vertical="center", wrap_text=False)
+
+    # Data rows
+    for r_idx, row in enumerate(data_rows, start=2):
+        for c_idx, value in enumerate(row, start=1):
+            v = "" if value is None else value
+            cell = ws.cell(row=r_idx, column=c_idx, value=v)
+            if c_idx in url_cols and isinstance(v, str) and v.startswith(("http://", "https://")):
+                cell.hyperlink = v
+                cell.font = Font(color="0563C1", underline="single")
+
+    # Freeze + filter
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = ws.dimensions
+
+    # Color scale on confidence columns (red <40, yellow 60, green >80)
+    if data_rows:
+        last_row = len(data_rows) + 1
+        rule = ColorScaleRule(
+            start_type="num", start_value=0,  start_color="FCA5A5",  # red-300
+            mid_type="num",   mid_value=60,  mid_color="FDE68A",     # yellow-200
+            end_type="num",   end_value=100, end_color="86EFAC",     # green-300
+        )
+        for c_idx in conf_cols:
+            col_letter = get_column_letter(c_idx)
+            ws.conditional_formatting.add(f"{col_letter}2:{col_letter}{last_row}", rule)
+
+    # Auto column widths (cap 60)
+    for col_idx in range(1, len(header) + 1):
+        col_letter = get_column_letter(col_idx)
+        max_len = max(
+            (len(str(ws.cell(row=r, column=col_idx).value or "")) for r in range(1, ws.max_row + 1)),
+            default=10,
+        )
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, 12), 60)
+
+    # Row height for header
+    ws.row_dimensions[1].height = 22
+
+    wb.save(xlsx_path)
+
+
 def _write_csv(leads: list, out_dir: Optional[Path] = None) -> str:
     """Write two artifacts: Excel-FR-friendly CSV (semicolon + BOM) AND XLSX.
 
@@ -134,19 +217,11 @@ def _write_csv(leads: list, out_dir: Optional[Path] = None) -> str:
         writer = csv.writer(fh, delimiter=";", quoting=csv.QUOTE_MINIMAL)
         writer.writerows(rows)
 
-    # XLSX (binary, no separator ambiguity ever, opens cleanly everywhere)
+    # Premium XLSX: bold header w/ background, clickable hyperlinks on URL
+    # cells, color-graded confidence scores, auto-column widths, frozen header.
     try:
-        from openpyxl import Workbook  # type: ignore
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "leads"
-        for row in rows:
-            ws.append([("" if v is None else v) for v in row])
-        # Freeze the header row
-        ws.freeze_panes = "A2"
-        wb.save(xlsx_path)
+        _write_premium_xlsx(rows, xlsx_path)
     except ImportError:
-        # openpyxl not installed → CSV only, still works
-        pass
+        pass  # openpyxl missing → CSV-only is still fine
 
     return str(csv_path)

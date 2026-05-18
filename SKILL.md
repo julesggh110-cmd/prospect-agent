@@ -1,7 +1,7 @@
 ---
 name: prospect-agent
 description: Generate verified B2B prospect lists from a natural-language request. Returns decision-maker + email + phone + LinkedIn + Instagram per company, with confidence scores and provenance. Never invents data. Use when the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B".
-version: 0.4.0
+version: 0.5.0
 triggers:
   - prospection
   - prospects
@@ -18,15 +18,23 @@ Verified B2B prospect lists from natural-language requests.
 
 ## 🚨 The ONE thing to do (90% of cases)
 
-Run `run_campaign.py` once. It handles the full pipeline (Sirene → Pappers → Brave → SMTP verify → export). Example:
+Run `run_campaign.py` once. It handles the full pipeline (Sirene → Pappers → Brave → SMTP verify → ICP scoring → dedup vs lead_store → optional HubSpot sync → export). Example:
 
 ```bash
 python run_campaign.py \
-  --query "cabinet dentaire" --code-postal 69001 --volume 10 \
-  --output prospects-dentistes-lyon
+  --query "caviste premium" --code-postal 75001 --volume 20 \
+  --icp-preset cavistes-paris \
+  --only-new \
+  --push-to-hubspot \
+  --output cavistes-paris-1
 ```
 
-That's it. The script prints a summary and writes a `.csv` (Excel-FR) + `.xlsx` in `./output/`. **Do not write your own CSV** — Excel FR reads comma-CSVs as a single column.
+Key flags:
+- `--icp-preset {cavistes-paris,palaces-paris}`: score each lead 0-100 vs an ideal profile; sorted by score in the output.
+- `--only-new`: skip companies already in `data/leads.db` (dedup across runs).
+- `--push-to-hubspot`: create Contacts + Companies + audit Notes in HubSpot (needs `HUBSPOT_ACCESS_TOKEN`).
+
+The script writes `output/<stem>.csv` (Excel-FR) + `output/<stem>.xlsx` (premium: hyperlinks active, color-graded confidence cells, filterable header). **Do not write your own CSV** — Excel FR reads comma-CSVs as a single column.
 
 ## Non-negotiable rules
 

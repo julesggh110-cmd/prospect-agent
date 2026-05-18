@@ -86,13 +86,28 @@ def run(
     persona_role_hint: str | None = None,
     output_stem: str | None = None,
     max_workers: int = 3,
+    icp: dict | None = None,
+    only_new: bool = False,
+    push_to_hubspot: bool = False,
+    campaign_id: str | None = None,
 ) -> str:
-    """End-to-end campaign. Returns the path of the produced CSV."""
+    """End-to-end campaign. Returns the path of the produced CSV.
+
+    New in v0.5.0:
+    - `icp`: dict from icp.py (e.g., PRESET_CAVISTES_PREMIUM_PARIS). Annotates
+      each lead with an `icp_score` 0-100. Use `icp.PRESET_*` for ready-made.
+    - `only_new`: skip companies already in lead_store (dedup across runs).
+    - `push_to_hubspot`: also sync kept leads to HubSpot (needs HUBSPOT_ACCESS_TOKEN).
+    - `campaign_id`: tag the lead_store rows so you can list "leads from campaign X".
+    """
+    import time as _time
     from sirene_client import SireneClient
     from pipeline import enrich_companies_parallel, finalize_lead
     from sheets_export import export_leads
+    from lead_store import already_seen_sirens, upsert_leads
 
     t0 = time.time()
+    campaign_id = campaign_id or _time.strftime("campaign-%Y%m%d-%H%M%S")
 
     # 1. Source via Sirene
     with SireneClient() as c:
@@ -110,6 +125,12 @@ def run(
         sys.exit(1)
     print(f"[Sirene] {len(companies)} companies")
 
+    # 1b. Dedup vs lead_store if requested
+    if only_new:
+        seen = already_seen_sirens([c.siren for c in companies])
+        companies = [c for c in companies if c.siren not in seen]
+        print(f"[Dedup] {len(seen)} already prospected, {len(companies)} new")
+
     # 2. Parallel partial enrichment (Pappers + Brave + cache)
     partials = enrich_companies_parallel(companies, max_workers=max_workers)
     with_site = sum(1 for p in partials if p.get('website'))
@@ -117,6 +138,13 @@ def run(
 
     # 3. Finalize each lead — Phase-1 default: take the first legal director.
     leads = []
+    sirens = [c.siren for c in companies if c.siren]
+    if only_new:
+        # We already filtered out seen ones above — all current ones are "new" by construction
+        new_sirens = set(sirens)
+    else:
+        new_sirens = set(sirens) - already_seen_sirens(sirens)
+
     for p in partials:
         dirs = p.get("legal_dirigeants") or []
         if not dirs:
@@ -134,27 +162,47 @@ def run(
             person_role=role,
             person_sources=["sirene"],
         )
+        # mark whether this is a fresh discovery
+        setattr(lead, "is_new_lead", lead.company_siren in new_sirens)
         leads.append(lead)
 
-    # 4. Export both CSV (Excel-FR) and XLSX side by side
+    # 3b. ICP scoring (optional)
+    if icp:
+        from icp import annotate_leads
+        annotate_leads(leads, icp)
+        print(f"[ICP] '{icp.get('name','?')}' applied. Top score: "
+              f"{max((l.icp_score for l in leads), default=0)}")
+
+    # 3c. Persist to lead_store (dedup history + ICP score saved)
+    n_new, n_existing = upsert_leads(leads, campaign_id=campaign_id)
+    print(f"[Store] +{n_new} new leads, {n_existing} re-seen "
+          f"(campaign_id={campaign_id})")
+
+    # 3d. Optional HubSpot push (only kept leads)
+    if push_to_hubspot:
+        from hubspot_client import sync_leads_to_hubspot
+        created, updated, msg = sync_leads_to_hubspot([l for l in leads if not l.dropped])
+        print(f"[HubSpot] {msg}")
+
+    # 4. Export both CSV (Excel-FR) and premium XLSX side by side
     if output_stem:
-        # Override the default leads-<timestamp>
         out_dir = Path("output")
         out_dir.mkdir(exist_ok=True)
         csv_path = out_dir / f"{output_stem}.csv"
         xlsx_path = out_dir / f"{output_stem}.xlsx"
         import csv as _csv
-        from sheets_export import HEADERS, _row_for
-        rows = [HEADERS] + [_row_for(l) for l in leads if not l.dropped]
+        from sheets_export import HEADERS, _row_for, _write_premium_xlsx
+        # Sort kept leads: best ICP first (if scored), else by overall_score
+        kept = sorted(
+            [l for l in leads if not l.dropped],
+            key=lambda x: (getattr(x, "icp_score", 0) or 0, x.overall_score),
+            reverse=True,
+        )
+        rows = [HEADERS] + [_row_for(l) for l in kept]
         with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
             _csv.writer(fh, delimiter=";", quoting=_csv.QUOTE_MINIMAL).writerows(rows)
         try:
-            from openpyxl import Workbook
-            wb = Workbook(); ws = wb.active; ws.title = "leads"
-            for r in rows:
-                ws.append([("" if v is None else v) for v in r])
-            ws.freeze_panes = "A2"
-            wb.save(xlsx_path)
+            _write_premium_xlsx(rows, xlsx_path)
         except ImportError:
             pass
         kept_path = str(csv_path)
@@ -179,10 +227,23 @@ def _cli() -> None:
                    help="Output filename stem (e.g., 'prospects-dentistes-lyon')")
     p.add_argument("--max-workers", type=int, default=3,
                    help="Parallel enrichment workers (default 3)")
+    p.add_argument("--icp-preset", choices=["cavistes-paris", "palaces-paris"],
+                   help="Apply a preset ICP profile and add icp_score column")
+    p.add_argument("--only-new", action="store_true",
+                   help="Skip companies already in lead_store (dedup across runs)")
+    p.add_argument("--push-to-hubspot", action="store_true",
+                   help="Sync kept leads to HubSpot CRM (needs HUBSPOT_ACCESS_TOKEN)")
+    p.add_argument("--campaign-id", help="Tag this run in lead_store")
     args = p.parse_args()
 
     if not any([args.query, args.naf, args.code_postal, args.departement, args.region]):
         p.error("provide at least one filter (--query / --naf / --code-postal / ...)")
+
+    icp_profile = None
+    if args.icp_preset:
+        from icp import PRESET_CAVISTES_PREMIUM_PARIS, PRESET_PALACES_PARIS
+        icp_profile = {"cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
+                       "palaces-paris": PRESET_PALACES_PARIS}[args.icp_preset]
 
     run(
         query=args.query,
@@ -194,6 +255,10 @@ def _cli() -> None:
         persona_role_hint=args.persona_role_hint,
         output_stem=args.output_stem,
         max_workers=args.max_workers,
+        icp=icp_profile,
+        only_new=args.only_new,
+        push_to_hubspot=args.push_to_hubspot,
+        campaign_id=args.campaign_id,
     )
 
 
