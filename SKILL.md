@@ -1,7 +1,7 @@
 ---
 name: prospect-agent
-description: Generate verified B2B prospect lists with decision-maker contacts (email, phone, LinkedIn, Instagram) from a natural-language request. Triangulates info from multiple sources, never hallucinates, returns a confidence score per field. Use when the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B", or any B2B prospection task.
-version: 0.1.0
+description: Generate verified B2B prospect lists from a natural-language request. For each company returns the decision-maker (matched to the requested persona) plus their email, phone, LinkedIn, Instagram, and the company's own LinkedIn / Instagram / Facebook. Cross-checks every value against multiple sources, never invents data, returns a confidence score per field and excludes contacts that can't be verified. Use whenever the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B", or any B2B prospection task.
+version: 0.2.0
 triggers:
   - prospection
   - prospects
@@ -13,6 +13,7 @@ triggers:
   - B2B contacts
   - liste d'entreprises
   - dirigeants
+  - générer des leads
 ---
 
 # Prospect Agent
@@ -20,101 +21,216 @@ triggers:
 You are operating the **Prospect Agent** skill — a system for generating
 **verified** B2B prospect lists from natural-language requests.
 
-## Core principles (non-negotiable)
+## Non-negotiable principles
 
-1. **Triangulation before output** — Every field of every lead (name, role, email,
-   phone, LinkedIn, Instagram) must be confirmed by **at least two independent
-   sources** OR by **one source + an active verification step** (e.g. SMTP check,
-   URL liveness check). A field with only one unverified source is marked
-   `unverified` and excluded from the deliverable unless explicitly requested.
+1. **Triangulation before output** — Every field of every lead (name, role,
+   email, phone, LinkedIn, Instagram) must be confirmed by **at least two
+   independent sources** OR **one source + an active verification step**
+   (e.g. SMTP RCPT TO, URL HEAD 200). Fields with only one unverified source
+   land in the deliverable with a low confidence note, but are dropped from
+   the "primary" view.
 
-2. **Zero hallucination** — Never invent. If you don't have evidence, leave the
-   field empty and set its confidence to 0. Better an empty cell than a wrong one.
+2. **Zero hallucination** — Never invent. If you don't have evidence, leave
+   the field empty and set its confidence to 0. Better an empty cell than a
+   wrong one.
 
-3. **Provenance tracking** — For every value you keep, store the source URLs
-   alongside it. Output must be auditable.
+3. **Provenance tracking** — Every value carries the URL(s) of the source(s)
+   that produced it. The Lead model enforces this.
 
-4. **Confidence scoring** — Each field gets a confidence score 0–100:
-   - `verified` (≥ 80): multiple sources agree, value is consistent
-   - `partial` (50–79): one source + one weak corroboration
-   - `unverified` (< 50): single source, no corroboration — excluded by default
-   - `missing` (0): no source found
+4. **Confidence scoring** — 0–100 per field:
+   - `verified` (≥ 80): 2+ sources agree
+   - `partial` (50–79): 1 source + active verification (e.g. SMTP deliverable)
+   - `unverified` (< 50): single source, no corroboration
+   - `missing` (0): no source
 
-## Workflow for any prospection request
+5. **Drop, don't guess** — When a lead has no reliable decision-maker name
+   OR no contact channel above 60% confidence, it is dropped from the
+   deliverable with a `drop_reason` so the user knows why.
 
-When you receive a request like *"trouve-moi 30 dirigeants RH de cabinets compta à
-Paris avec email pro et LinkedIn"*:
+## Required environment
 
-1. **Parse the request** — Extract:
-   - Sector / activity (mapping to NAF codes if FR)
-   - Geographic scope (city, département, region, country)
-   - Persona target (the role of the decision-maker to find)
-   - Volume target
-   - Required fields (email, phone, LinkedIn, Instagram, etc.)
-   - Any additional filters (company size, revenue, age)
+Before running, ensure (run `python scripts/setup_wizard.py --check` first):
+- `ANTHROPIC_API_KEY` — required (you already use it; this is for the python
+  scripts if they ever need a Claude call from inside).
+- `GOOGLE_SERVICE_ACCOUNT_JSON` + `DEFAULT_SHEET_ID` — optional; without
+  these, output falls back to a CSV in `./data/`.
 
-2. **Persona disambiguation** — Based on the sector, determine the right persona.
-   Example mappings (use your judgment, do NOT hard-code blindly):
-   - Restaurants / commerces locaux → propriétaire / gérant
-   - Cabinets compta / juridique → associé / fondateur
-   - SaaS B2B 50-200 employees → VP Sales, Head of Growth, CTO
-   - Industrie → Directeur achats, Directeur production
-   - Si le secteur est ambigu, demande à l'utilisateur de confirmer le persona.
+If anything required is missing, tell the user EXACTLY what to do (don't
+just say "set up your credentials" — give them the URL).
 
-3. **Source companies** — Use the available providers in this priority order:
-   - France: `scripts/sirene_client.py` (INSEE Sirene via api.gouv.fr — gratuit, exhaustif)
-   - Future: international providers (not yet implemented)
+## Workflow for a prospection request
 
-4. **Enrich each company** — For each candidate company:
-   - Fetch the official website (Sirene gives it, or search via Google fallback)
-   - Use `scripts/web_enrichment.py` to extract contact info, team page, social links
-   - Use Claude to identify the decision-maker matching the persona from the team
-     page or About page
+When the user says *e.g.* "trouve-moi 20 dirigeants RH dans la fintech à
+Paris avec leur email et LinkedIn":
 
-5. **Triangulate decision-maker contacts** — For each identified person:
-   - **Email**: pattern-guess (prenom.nom@domain, pnom@domain, etc.) + SMTP verification
-   - **Phone**: company switchboard (web) cross-checked with Sirene phone
-   - **LinkedIn**: Google search `site:linkedin.com/in/ "{name}" "{company}"` →
-     verify the profile mentions the company
-   - **Instagram**: ONLY if the sector is B2C-local (restos, retail, beauté, coachs).
-     Search website footer + Google `site:instagram.com {company}` → verify
-     account mentions the company
+### Step 1 — Parse the request (you, the LLM)
 
-6. **Score & filter** — For each lead, compute the confidence score per field.
-   Drop leads where the decision-maker name or email cannot be verified.
+Extract:
+- **sector / activity** (mapping to NAF code if FR known)
+- **geo** (city, dept, region)
+- **persona target** (the role of the decision-maker to find — see Step 2)
+- **volume target** (default 10 if not specified)
+- **required fields** (email, phone, LinkedIn, Instagram…)
+- **filters** (size, age, revenue, etc.)
 
-7. **Output** — Push to Google Sheets via `scripts/sheets_export.py` with one
-   row per lead. Columns: company, sector, address, decision-maker name, role,
-   email, email_confidence, email_sources, phone, phone_confidence, phone_sources,
-   linkedin, linkedin_confidence, instagram, instagram_confidence, overall_score.
+### Step 2 — Persona disambiguation
 
-## Setup requirements (first run)
+Given the sector, pick the realistic operational decision-maker. Use your
+judgment, don't blindly pick the legal director. Examples:
 
-Before the first prospection run, you must ensure the user has set up:
-- **Anthropic API key** in `.env` as `ANTHROPIC_API_KEY=...` (for Claude calls)
-- **Google Sheets OAuth** — see `scripts/setup_wizard.py` (TBD)
-
-If these are missing, run `scripts/setup_wizard.py` first and guide the user
-through it. Do NOT proceed with prospection if credentials are missing.
-
-## What you must NEVER do
-
-- Never return a contact you couldn't verify.
-- Never scrape LinkedIn profile pages programmatically (Terms of Service
-  violation + account ban risk). Only use LinkedIn URLs found via Google search.
-- Never invent emails or phone numbers, even "plausible" ones.
-- Never store credentials in plain text outside `.env` (which is gitignored).
-
-## Available scripts
-
-| Script | Purpose |
+| Sector | Typical operational decider |
 |---|---|
-| `scripts/sirene_client.py` | Search FR companies via INSEE Sirene |
-| `scripts/web_enrichment.py` | (TBD) Scrape company websites |
-| `scripts/triangulation.py` | (TBD) Cross-source verification logic |
-| `scripts/sheets_export.py` | (TBD) Google Sheets push |
-| `scripts/setup_wizard.py` | (TBD) First-run credentials setup |
+| Resto / café / commerce local | Propriétaire / gérant |
+| Cabinet dentaire / médical / juridique | Associé / titulaire (souvent = dirigeant légal) |
+| SaaS B2B 50-200 salariés | VP Sales, Head of Growth, CTO |
+| Industrie | Directeur achats, Directeur production |
+| Agence comm / marketing | Fondateur, Directeur |
 
-## Phase 1 scope (current)
+If the sector is ambiguous, ask the user to confirm the persona.
 
-Only France via Sirene + web enrichment. International is Phase 2.
+### Step 3 — Source companies (FR via Sirene)
+
+```python
+from scripts.sirene_client import SireneClient
+with SireneClient() as c:
+    resp = c.search(
+        query="cabinet dentaire",
+        code_postal="69001",      # or departement/region
+        per_page=20,              # max 25
+    )
+companies = resp.results
+```
+
+Use the `naf=` filter if you have an exact NAF code (e.g. `86.23Z` for
+dentistes). Otherwise the free-text `query` is fine.
+
+### Step 4 — Partial enrichment per company
+
+For each Sirene company, run:
+
+```python
+from scripts.pipeline import enrich_company_partial
+partial = enrich_company_partial(company)
+```
+
+This returns: website (found via DDG search), web_enrichment (emails,
+phones, company LinkedIn/Insta/Facebook scraped from the site), team_page_text
+(raw text of the /equipe or /about page if any), legal_dirigeants from
+Sirene.
+
+### Step 5 — Identify the decision-maker (you, the LLM)
+
+Read `partial["team_page_text"]` and `partial["legal_dirigeants"]`. Decide:
+- Who, in this company, matches the persona requested?
+- What's their first name, last name, role?
+- What sources support this choice? (e.g. ["website-team-page", "sirene"])
+
+If the team page lists multiple candidates, pick the closest to the persona.
+If only the legal director is available and the persona matches (e.g.
+"gérant de cabinet dentaire" + Sirene says "gérant: X"), use them with
+sources = `["sirene"]`.
+
+If you genuinely can't identify a credible decision-maker, **do not invent
+one** — return a partial Lead with `person_name.confidence = 0` and let the
+finalize step drop it.
+
+### Step 6 — Finalize the lead
+
+```python
+from scripts.pipeline import finalize_lead
+lead = finalize_lead(
+    partial,
+    person_first="Marie",
+    person_last="Dupont",
+    person_role="Gérante",
+    person_sources=["website-team-page", "sirene"],
+    naf_label="Pratique dentaire",
+)
+```
+
+`finalize_lead` will:
+- Generate email patterns (prenom.nom@, pnom@, …) and verify via SMTP
+- Search the person's LinkedIn URL via DDG (only the URL, never scrapes the profile)
+- Search the person's Instagram URL via DDG (best-effort)
+- Compute confidence per field
+- Mark `dropped=True` with a reason if quality thresholds aren't met
+
+### Step 7 — Export
+
+```python
+from scripts.sheets_export import export_leads
+output = export_leads([l for l in leads if not l.dropped])
+print(output)   # Google Sheets URL or CSV path
+```
+
+Also report to the user:
+- How many leads were generated
+- How many were dropped and why (in aggregate)
+- The output URL/path
+- A sample of 2-3 leads with their confidence scores
+
+## Hard rules — never do these
+
+- **NEVER scrape LinkedIn profile pages** (ToS violation, ban risk). Only
+  use LinkedIn URLs discovered via DDG search.
+- **NEVER invent emails, phones, names** even "plausible-looking" ones.
+- **NEVER commit `.env`** — it's gitignored.
+- **NEVER print or echo Anthropic / Google credentials** in your output.
+
+## Available modules
+
+| Script | Purpose | CLI |
+|---|---|---|
+| `scripts/sirene_client.py` | FR company search via Sirene API | `python scripts/sirene_client.py "query" --code-postal 69001` |
+| `scripts/website_finder.py` | Find a company's website via DDG | `python scripts/website_finder.py "Company Name" --city Lyon` |
+| `scripts/web_enrichment.py` | Scrape a website for emails/phones/socials | `python scripts/web_enrichment.py https://example.com` |
+| `scripts/social_finder.py` | Find LinkedIn/Insta URLs via DDG | `python scripts/social_finder.py company-linkedin "Acme"` |
+| `scripts/email_finder.py` | Email pattern gen + SMTP verify | `python scripts/email_finder.py Marie Dupont example.com` |
+| `scripts/pipeline.py` | High-level glue (`partial` subcommand) | `python scripts/pipeline.py partial --siren 819586298` |
+| `scripts/triangulation.py` | Lead / ScoredField models | (importable only) |
+| `scripts/sheets_export.py` | Push to Sheets, fallback CSV | (importable only) |
+| `scripts/setup_wizard.py` | First-run credentials wizard | `python scripts/setup_wizard.py --check` |
+
+## Phase 1 scope (this version)
+
+- **France only** (via Sirene). International coverage is Phase 2.
+- **Single-pass enrichment** (no retry / no human-in-the-loop confirmation).
+- **No CRM integration** beyond Google Sheets export.
+- **Email verification = SMTP probe** (not 100% reliable — catch-all domains
+  return ambiguous results; we flag those honestly).
+
+## Run a full prospection in one go (example)
+
+```python
+import warnings; warnings.filterwarnings("ignore")
+from scripts.sirene_client import SireneClient
+from scripts.pipeline import enrich_company_partial, finalize_lead
+from scripts.sheets_export import export_leads
+
+with SireneClient() as c:
+    resp = c.search("cabinet dentaire", code_postal="69001", per_page=10)
+
+leads = []
+for company in resp.results:
+    partial = enrich_company_partial(company)
+
+    # YOU pick the decision-maker here based on partial['team_page_text'] +
+    # partial['legal_dirigeants']. For demo, use the first legal director.
+    if not partial["legal_dirigeants"]:
+        continue
+    d = partial["legal_dirigeants"][0]
+    parts = d["name"].rsplit(" ", 1)
+    if len(parts) != 2:
+        continue
+    first, last = parts
+
+    lead = finalize_lead(
+        partial, person_first=first, person_last=last,
+        person_role=d["role"], person_sources=["sirene"],
+    )
+    leads.append(lead)
+
+output = export_leads([l for l in leads if not l.dropped])
+print(f"{sum(1 for l in leads if not l.dropped)} leads exportés vers {output}")
+print(f"{sum(1 for l in leads if l.dropped)} leads filtrés (low confidence)")
+```
