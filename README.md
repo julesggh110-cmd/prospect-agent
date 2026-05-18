@@ -25,10 +25,10 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # First-run setup (will prompt for Anthropic API key + Google Sheets OAuth)
-python scripts/setup_wizard.py
+python setup_wizard.py
 
 # Run a prospection request
-python scripts/run.py "trouve-moi 20 dirigeants de cabinets dentaires à Lyon"
+python run.py "trouve-moi 20 dirigeants de cabinets dentaires à Lyon"
 ```
 
 ## Using as a Multica skill
@@ -43,7 +43,7 @@ python scripts/run.py "trouve-moi 20 dirigeants de cabinets dentaires à Lyon"
 ```
 prospect-agent/
 ├── SKILL.md                # Multica skill manifest (entry point for Claude)
-├── scripts/                # Python modules
+├──                 # Python modules
 │   ├── sirene_client.py    # FR official company database
 │   ├── web_enrichment.py   # Scrape company websites for contacts
 │   ├── triangulation.py    # Cross-source verification + confidence

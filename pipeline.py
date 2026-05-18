@@ -26,16 +26,16 @@ from typing import Optional
 
 from rich.console import Console
 
-from .email_finder import find_best_email
-from .social_finder import (
+from email_finder import find_best_email
+from social_finder import (
     find_instagram_for_company,
     find_instagram_for_person,
     find_linkedin_for_company,
     find_linkedin_for_person,
 )
-from .triangulation import Lead, ScoredField, triangulate_phone, triangulate_url
-from .web_enrichment import enrich_company_from_website
-from .website_finder import find_company_website
+from triangulation import Lead, ScoredField, triangulate_phone, triangulate_url
+from web_enrichment import enrich_company_from_website
+from website_finder import find_company_website
 
 console = Console()
 
@@ -227,7 +227,7 @@ def _cli() -> None:
     args = parser.parse_args()
 
     if args.cmd == "partial":
-        from .sirene_client import SireneClient
+        from sirene_client import SireneClient
         if args.siren:
             with SireneClient() as c:
                 resp = c.search(args.siren)

@@ -1,7 +1,7 @@
 ---
 name: prospect-agent
 description: Generate verified B2B prospect lists from a natural-language request. For each company returns the decision-maker (matched to the requested persona) plus their email, phone, LinkedIn, Instagram, and the company's own LinkedIn / Instagram / Facebook. Cross-checks every value against multiple sources, never invents data, returns a confidence score per field and excludes contacts that can't be verified. Use whenever the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B", or any B2B prospection task.
-version: 0.2.0
+version: 0.2.1
 triggers:
   - prospection
   - prospects
@@ -49,19 +49,25 @@ You are operating the **Prospect Agent** skill — a system for generating
 
 ## Required environment
 
-Before running, ensure (run `python scripts/setup_wizard.py --check` first):
-- `ANTHROPIC_API_KEY` — required (you already use it; this is for the python
-  scripts if they ever need a Claude call from inside).
-- `GOOGLE_SERVICE_ACCOUNT_JSON` + `DEFAULT_SHEET_ID` — optional; without
-  these, output falls back to a CSV in `./data/`.
+Before running, run `python setup_wizard.py --check`:
+- `ANTHROPIC_API_KEY` — required (this is for Claude reasoning inside Python scripts; you, the agent, already have your own auth).
+- `GOOGLE_SERVICE_ACCOUNT_JSON` + `DEFAULT_SHEET_ID` — optional; without these, output falls back to a CSV in `./data/`.
 
-If anything required is missing, tell the user EXACTLY what to do (don't
-just say "set up your credentials" — give them the URL).
+If anything required is missing, tell the user EXACTLY what to do (don't just say "set up your credentials" — give them the URL).
+
+Also ensure dependencies are installed:
+```bash
+pip install -r requirements.txt
+```
+or, if your environment doesn't allow system-wide pip:
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt
+```
+Then prefix subsequent commands with `.venv/bin/python` instead of `python`.
 
 ## Workflow for a prospection request
 
-When the user says *e.g.* "trouve-moi 20 dirigeants RH dans la fintech à
-Paris avec leur email et LinkedIn":
+When the user says *e.g.* "trouve-moi 20 dirigeants RH dans la fintech à Paris avec leur email et LinkedIn":
 
 ### Step 1 — Parse the request (you, the LLM)
 
@@ -75,8 +81,7 @@ Extract:
 
 ### Step 2 — Persona disambiguation
 
-Given the sector, pick the realistic operational decision-maker. Use your
-judgment, don't blindly pick the legal director. Examples:
+Given the sector, pick the realistic operational decision-maker. Use your judgment, don't blindly pick the legal director. Examples:
 
 | Sector | Typical operational decider |
 |---|---|
@@ -91,7 +96,7 @@ If the sector is ambiguous, ask the user to confirm the persona.
 ### Step 3 — Source companies (FR via Sirene)
 
 ```python
-from scripts.sirene_client import SireneClient
+from sirene_client import SireneClient
 with SireneClient() as c:
     resp = c.search(
         query="cabinet dentaire",
@@ -101,22 +106,18 @@ with SireneClient() as c:
 companies = resp.results
 ```
 
-Use the `naf=` filter if you have an exact NAF code (e.g. `86.23Z` for
-dentistes). Otherwise the free-text `query` is fine.
+Use the `naf=` filter if you have an exact NAF code (e.g. `86.23Z` for dentistes). Otherwise the free-text `query` is fine.
 
 ### Step 4 — Partial enrichment per company
 
 For each Sirene company, run:
 
 ```python
-from scripts.pipeline import enrich_company_partial
+from pipeline import enrich_company_partial
 partial = enrich_company_partial(company)
 ```
 
-This returns: website (found via DDG search), web_enrichment (emails,
-phones, company LinkedIn/Insta/Facebook scraped from the site), team_page_text
-(raw text of the /equipe or /about page if any), legal_dirigeants from
-Sirene.
+Returns: website (found via DDG search), web_enrichment (emails, phones, company LinkedIn/Insta/Facebook scraped from the site), team_page_text, legal_dirigeants from Sirene.
 
 ### Step 5 — Identify the decision-maker (you, the LLM)
 
@@ -125,19 +126,14 @@ Read `partial["team_page_text"]` and `partial["legal_dirigeants"]`. Decide:
 - What's their first name, last name, role?
 - What sources support this choice? (e.g. ["website-team-page", "sirene"])
 
-If the team page lists multiple candidates, pick the closest to the persona.
-If only the legal director is available and the persona matches (e.g.
-"gérant de cabinet dentaire" + Sirene says "gérant: X"), use them with
-sources = `["sirene"]`.
+If the team page lists multiple candidates, pick the closest to the persona. If only the legal director is available and the persona matches, use them with sources = `["sirene"]`.
 
-If you genuinely can't identify a credible decision-maker, **do not invent
-one** — return a partial Lead with `person_name.confidence = 0` and let the
-finalize step drop it.
+If you genuinely can't identify a credible decision-maker, **do not invent one**.
 
 ### Step 6 — Finalize the lead
 
 ```python
-from scripts.pipeline import finalize_lead
+from pipeline import finalize_lead
 lead = finalize_lead(
     partial,
     person_first="Marie",
@@ -149,7 +145,7 @@ lead = finalize_lead(
 ```
 
 `finalize_lead` will:
-- Generate email patterns (prenom.nom@, pnom@, …) and verify via SMTP
+- Generate email patterns + verify via SMTP
 - Search the person's LinkedIn URL via DDG (only the URL, never scrapes the profile)
 - Search the person's Instagram URL via DDG (best-effort)
 - Compute confidence per field
@@ -158,7 +154,7 @@ lead = finalize_lead(
 ### Step 7 — Export
 
 ```python
-from scripts.sheets_export import export_leads
+from sheets_export import export_leads
 output = export_leads([l for l in leads if not l.dropped])
 print(output)   # Google Sheets URL or CSV path
 ```
@@ -171,41 +167,39 @@ Also report to the user:
 
 ## Hard rules — never do these
 
-- **NEVER scrape LinkedIn profile pages** (ToS violation, ban risk). Only
-  use LinkedIn URLs discovered via DDG search.
+- **NEVER scrape LinkedIn profile pages** (ToS violation, ban risk). Only use LinkedIn URLs discovered via DDG search.
 - **NEVER invent emails, phones, names** even "plausible-looking" ones.
 - **NEVER commit `.env`** — it's gitignored.
 - **NEVER print or echo Anthropic / Google credentials** in your output.
 
-## Available modules
+## Available modules (all at the root of this skill)
 
 | Script | Purpose | CLI |
 |---|---|---|
-| `scripts/sirene_client.py` | FR company search via Sirene API | `python scripts/sirene_client.py "query" --code-postal 69001` |
-| `scripts/website_finder.py` | Find a company's website via DDG | `python scripts/website_finder.py "Company Name" --city Lyon` |
-| `scripts/web_enrichment.py` | Scrape a website for emails/phones/socials | `python scripts/web_enrichment.py https://example.com` |
-| `scripts/social_finder.py` | Find LinkedIn/Insta URLs via DDG | `python scripts/social_finder.py company-linkedin "Acme"` |
-| `scripts/email_finder.py` | Email pattern gen + SMTP verify | `python scripts/email_finder.py Marie Dupont example.com` |
-| `scripts/pipeline.py` | High-level glue (`partial` subcommand) | `python scripts/pipeline.py partial --siren 819586298` |
-| `scripts/triangulation.py` | Lead / ScoredField models | (importable only) |
-| `scripts/sheets_export.py` | Push to Sheets, fallback CSV | (importable only) |
-| `scripts/setup_wizard.py` | First-run credentials wizard | `python scripts/setup_wizard.py --check` |
+| `sirene_client.py` | FR company search via Sirene API | `python sirene_client.py "query" --code-postal 69001` |
+| `website_finder.py` | Find a company's website via DDG | `python website_finder.py "Company Name" --city Lyon` |
+| `web_enrichment.py` | Scrape a website for emails/phones/socials | `python web_enrichment.py https://example.com` |
+| `social_finder.py` | Find LinkedIn/Insta URLs via DDG | `python social_finder.py company-linkedin "Acme"` |
+| `email_finder.py` | Email pattern gen + SMTP verify | `python email_finder.py Marie Dupont example.com` |
+| `pipeline.py` | High-level glue (`partial` subcommand) | `python pipeline.py partial --siren 819586298` |
+| `triangulation.py` | Lead / ScoredField models | (importable only) |
+| `sheets_export.py` | Push to Sheets, fallback CSV | (importable only) |
+| `setup_wizard.py` | First-run credentials wizard | `python setup_wizard.py --check` |
 
 ## Phase 1 scope (this version)
 
 - **France only** (via Sirene). International coverage is Phase 2.
 - **Single-pass enrichment** (no retry / no human-in-the-loop confirmation).
 - **No CRM integration** beyond Google Sheets export.
-- **Email verification = SMTP probe** (not 100% reliable — catch-all domains
-  return ambiguous results; we flag those honestly).
+- **Email verification = SMTP probe** (not 100% reliable — catch-all domains return ambiguous results; we flag those honestly).
 
 ## Run a full prospection in one go (example)
 
 ```python
 import warnings; warnings.filterwarnings("ignore")
-from scripts.sirene_client import SireneClient
-from scripts.pipeline import enrich_company_partial, finalize_lead
-from scripts.sheets_export import export_leads
+from sirene_client import SireneClient
+from pipeline import enrich_company_partial, finalize_lead
+from sheets_export import export_leads
 
 with SireneClient() as c:
     resp = c.search("cabinet dentaire", code_postal="69001", per_page=10)
