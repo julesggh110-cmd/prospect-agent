@@ -1,0 +1,883 @@
+[
+  {
+    "label": "Le Bristol",
+    "partial": {
+      "company_name": "HOTEL LE BRISTOL",
+      "siren": "572047751",
+      "naf": "55.10Z",
+      "city": "PARIS",
+      "address": "112 RUE DU FAUBOURG SAINT-HONORE 75008 PARIS, 75008, PARIS",
+      "size": "41",
+      "legal_dirigeants": [
+        {
+          "name": "ALFRED DR OETKER",
+          "role": "Membre du conseil de surveillance"
+        },
+        {
+          "name": "HARALD DR SCHAUB",
+          "role": "Membre du conseil de surveillance"
+        },
+        {
+          "name": "CARL FERDINAND OETKER",
+          "role": "Membre du conseil de surveillance"
+        },
+        {
+          "name": "PKF ARSILON COMMISSARIAT AUX COMPTES",
+          "role": "Commissaire aux comptes titulaire"
+        },
+        {
+          "name": "OHMC FRANCE",
+          "role": "personne morale"
+        }
+      ],
+      "website": "https://www.top-paris-hotels.com",
+      "company_official_email": null,
+      "web_enrichment": {
+        "root_url": "https://www.top-paris-hotels.com",
+        "pages_fetched": [
+          "https://www.top-paris-hotels.com"
+        ],
+        "emails": [],
+        "phones": [
+          "46180526",
+          "48860876",
+          "20260519",
+          "20260520"
+        ],
+        "linkedin_company": null,
+        "linkedin_profiles": [],
+        "instagram_account": null,
+        "facebook": null,
+        "twitter": null,
+        "youtube": null,
+        "team_page_url": null,
+        "team_page_text": null,
+        "error": null
+      },
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": "46180526",
+        "sources": [
+          "https://www.top-paris-hotels.com"
+        ],
+        "confidence": 35,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Plaza Athénée",
+    "partial": {
+      "company_name": "HOTEL PLAZA ATHENEE",
+      "siren": "572093128",
+      "naf": "55.10Z",
+      "city": "PARIS",
+      "address": "25 AVENUE MONTAIGNE 75008 PARIS, 75008, PARIS",
+      "size": "41",
+      "legal_dirigeants": [
+        {
+          "name": "MOHD AZRAE AHMAD FAHRUDDEEN",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "FRANCOIS REGIS RENE DELAHAYE",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "- SOFIAN MD JANI",
+          "role": "Président de SAS"
+        },
+        {
+          "name": "NOORSURAINAH TENGAH",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "BDO PARIS AUDIT & ADVISORY",
+          "role": "Commissaire aux comptes titulaire"
+        }
+      ],
+      "website": "https://hotelplazaatheneeparis.ohotel.fr",
+      "company_official_email": null,
+      "web_enrichment": {
+        "root_url": "https://hotelplazaatheneeparis.ohotel.fr",
+        "pages_fetched": [
+          "https://hotelplazaatheneeparis.ohotel.fr"
+        ],
+        "emails": [
+          "support@ohotel.fr"
+        ],
+        "phones": [
+          "20052026",
+          "1674714945",
+          "1739412642",
+          "1739412643",
+          "1674715014",
+          "1674715076",
+          "1674714955",
+          "1706689593",
+          "1706691147",
+          "1706691064",
+          "1674714962",
+          "1674714986",
+          "1674714988",
+          "1674714990",
+          "1674714997",
+          "1674714998",
+          "1674714999",
+          "1674715002",
+          "1674715007",
+          "1674715009",
+          "1674715032",
+          "1674715038",
+          "1674715040",
+          "1674715043",
+          "1674715054",
+          "1674715058",
+          "1674715061",
+          "1706691082",
+          "1674715077",
+          "1674714967",
+          "1674714992",
+          "1674715041",
+          "1674715045",
+          "1706691021",
+          "1674715046",
+          "1674714983",
+          "1674715057",
+          "1706691365",
+          "1674715010",
+          "1674714970",
+          "1706690739",
+          "1674714984",
+          "1674715012",
+          "1674715023",
+          "1706691110",
+          "1706691175",
+          "1706691234",
+          "1706691338",
+          "1706690201",
+          "1706690569",
+          "1706690406",
+          "1674714981",
+          "1706689637",
+          "1674715069",
+          "1706691036",
+          "1706691301",
+          "1706691568",
+          "1674715022",
+          "1674715008",
+          "1739412640",
+          "1706690809",
+          "1706691218",
+          "1706691318",
+          "1706691131",
+          "1674714942",
+          "1674714958",
+          "1674714971",
+          "1674714973",
+          "1674714980",
+          "1674714987",
+          "1674714989",
+          "1674715020",
+          "1674715028",
+          "1674715035",
+          "1674715044",
+          "1674715048",
+          "1112131415",
+          "20232026",
+          "02629313266281",
+          "07459042",
+          "37111758",
+          "0726646420",
+          "77272469",
+          "944843086419",
+          "3871281483",
+          "20260518",
+          "80152813",
+          "444437258881",
+          "8992817390",
+          "94403272"
+        ],
+        "linkedin_company": null,
+        "linkedin_profiles": [],
+        "instagram_account": null,
+        "facebook": null,
+        "twitter": null,
+        "youtube": null,
+        "team_page_url": null,
+        "team_page_text": null,
+        "error": null
+      },
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": "20052026",
+        "sources": [
+          "https://hotelplazaatheneeparis.ohotel.fr"
+        ],
+        "confidence": 35,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Hôtel de Crillon",
+    "partial": {
+      "company_name": "HOTEL CRILLON",
+      "siren": "441585163",
+      "naf": "55.10Z",
+      "city": "PARIS",
+      "address": "122 RUE LA BOETIE 75008 PARIS, 75008, PARIS",
+      "size": "NN",
+      "legal_dirigeants": [
+        {
+          "name": "JEAN-CHRISTOPHE GEORGHIOU",
+          "role": "Commissaire aux comptes suppléant"
+        },
+        {
+          "name": "PRICEWATERHOUSECOOPERS AUDIT",
+          "role": "Commissaire aux comptes titulaire"
+        },
+        {
+          "name": "CLUB PRIME HOSPITALITY",
+          "role": "personne morale"
+        }
+      ],
+      "website": "https://hotelcrillonlebrave.com-hotel.com",
+      "company_official_email": null,
+      "web_enrichment": {
+        "root_url": "https://hotelcrillonlebrave.com-hotel.com",
+        "pages_fetched": [
+          "https://hotelcrillonlebrave.com-hotel.com"
+        ],
+        "emails": [
+          "info@com-hotel.com"
+        ],
+        "phones": [
+          "17372618112",
+          "1768390069",
+          "441187342",
+          "51443171",
+          "173726182745",
+          "173726181512",
+          "173726181920",
+          "173726181819",
+          "173726181818",
+          "173726181817",
+          "173726181716",
+          "173726181715",
+          "173726181614",
+          "173726181613",
+          "173726181511",
+          "173726181922",
+          "173726181510",
+          "17372618159",
+          "17372618148",
+          "17372618137",
+          "17372618136",
+          "17372618135",
+          "17372618124",
+          "17372618123",
+          "173726181921",
+          "173726182023",
+          "173726182744",
+          "173726182435",
+          "173726182743",
+          "173726182642",
+          "173726182641",
+          "173726182640",
+          "173726182539",
+          "173726182538",
+          "173726182537",
+          "173726182536",
+          "173726182434",
+          "173726182024",
+          "173726182433",
+          "173726182332",
+          "173726182331",
+          "173726182330",
+          "173726182229",
+          "173726182228",
+          "173726182227",
+          "173726182026",
+          "173726182025",
+          "17372618111",
+          "38074867",
+          "17372619221",
+          "17372619222",
+          "17372619233",
+          "17372619234",
+          "17372619235",
+          "17372619236",
+          "17372619247",
+          "17372619248",
+          "17372619241",
+          "17372619242",
+          "17372619253",
+          "17372619254",
+          "17372619255",
+          "17372619251",
+          "17372619262",
+          "17372619263",
+          "17372619264",
+          "17372619271",
+          "17372619272",
+          "17372619273",
+          "17372619274",
+          "17372619285",
+          "17372619286",
+          "17372619287",
+          "17372619298",
+          "17372619291",
+          "17372619292",
+          "17372619293",
+          "17372619304",
+          "17372619305",
+          "17372619316",
+          "17372619311",
+          "17372619322",
+          "17372619323",
+          "17372619334",
+          "17372619335",
+          "17372619341",
+          "17372619342",
+          "17372619343",
+          "17372619344",
+          "17372619355",
+          "17372619351",
+          "17372619352",
+          "17372619363",
+          "17372619364",
+          "17372619365",
+          "17372619361",
+          "17372619372",
+          "17372619373",
+          "17372619374",
+          "17372619381",
+          "17372619382",
+          "17372619383",
+          "17372619384",
+          "17372619385",
+          "17372619396",
+          "17372619397",
+          "17372619391",
+          "17372619402",
+          "17372619403",
+          "17372619404",
+          "17372619411",
+          "17372619422",
+          "17372619423",
+          "17372619424",
+          "17372619435",
+          "55740811",
+          "133452114"
+        ],
+        "linkedin_company": null,
+        "linkedin_profiles": [],
+        "instagram_account": null,
+        "facebook": null,
+        "twitter": null,
+        "youtube": null,
+        "team_page_url": null,
+        "team_page_text": null,
+        "error": null
+      },
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": "https://fr.linkedin.com/company/hotel-crillon-le-brave",
+        "sources": [
+          "search:linkedin-company"
+        ],
+        "confidence": 35,
+        "note": null
+      },
+      "company_instagram": {
+        "value": "https://www.instagram.com/popular/hotel-crillon-paris",
+        "sources": [
+          "search:instagram-company"
+        ],
+        "confidence": 35,
+        "note": null
+      },
+      "company_phone": {
+        "value": "17372618112",
+        "sources": [
+          "https://hotelcrillonlebrave.com-hotel.com"
+        ],
+        "confidence": 35,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Mandarin Oriental Paris",
+    "partial": {
+      "company_name": "MANDARIN ORIENTAL FRANCE",
+      "siren": "453430977",
+      "naf": "64.20Z",
+      "city": "PARIS",
+      "address": "251 RUE SAINT-HONORE 75001 PARIS, 75001, PARIS",
+      "size": "NN",
+      "legal_dirigeants": [
+        {
+          "name": "SYUNG HWA MATTHEW DAVID BISHOP",
+          "role": "Gérant"
+        },
+        {
+          "name": "ALLAN COLLIER",
+          "role": "Gérant"
+        },
+        {
+          "name": "ALASDAIR DAVID MURRAY",
+          "role": "Gérant"
+        }
+      ],
+      "website": null,
+      "company_official_email": null,
+      "web_enrichment": null,
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Cheval Blanc Paris",
+    "partial": {
+      "company_name": "SOCIETE D'EXPLOITATION HOTELIERE CHEVAL BLANC PARIS (CHEVAL BLANC PARIS) (SEH CBP)",
+      "siren": "797797768",
+      "naf": "70.10Z",
+      "city": "PARIS",
+      "address": "24-32 24 RUE JEAN GOUJON 75008 PARIS, 75008, PARIS",
+      "size": "41",
+      "legal_dirigeants": [
+        {
+          "name": "ERIC BOONSTOPPEL",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "CHRISTIAN BOYENS",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "OLIVIER LEFEBVRE",
+          "role": "Président de SAS"
+        },
+        {
+          "name": "DELOITTE & ASSOCIES",
+          "role": "Commissaire aux comptes titulaire"
+        }
+      ],
+      "website": null,
+      "company_official_email": null,
+      "web_enrichment": null,
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Four Seasons George V",
+    "partial": {
+      "company_name": "FOUR SEASONS HOTELS (PARIS) SARL",
+      "siren": "419575030",
+      "naf": "68.32A",
+      "city": "PARIS",
+      "address": "CHEZ SOGELO 95 RUE LA BOETIE 75008 PARIS, 75008, PARIS",
+      "size": "03",
+      "legal_dirigeants": [
+        {
+          "name": "VASOULLA BERGER",
+          "role": "Gérant"
+        },
+        {
+          "name": "THIBAUT DREGE",
+          "role": "Gérant"
+        },
+        {
+          "name": "GERARDO KALAW",
+          "role": "Gérant"
+        }
+      ],
+      "website": null,
+      "company_official_email": null,
+      "web_enrichment": null,
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Royal Monceau",
+    "partial": {
+      "company_name": "SOC D EXPLOITATION DU ROYAL MONCEAU (LE ROYAL MONCEAU ET HOTEL ROYAL MONCEAU)",
+      "siren": "479829582",
+      "naf": "55.10Z",
+      "city": "PARIS",
+      "address": "24 AVENUE HOCHE 75008 PARIS, 75008, PARIS",
+      "size": "32",
+      "legal_dirigeants": [
+        {
+          "name": "SALMA AHMAD HM ALHAMMADI",
+          "role": "Président de SAS"
+        },
+        {
+          "name": "ALEXANDER TURNER",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "DELOITTE & ASSOCIES",
+          "role": "Commissaire aux comptes titulaire"
+        }
+      ],
+      "website": null,
+      "company_official_email": null,
+      "web_enrichment": null,
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Shangri-La Paris",
+    "partial": {
+      "company_name": "SHANGRI-LA HOTELS (PARIS)",
+      "siren": "487719304",
+      "naf": "55.10Z",
+      "city": "PARIS",
+      "address": "10 AVENUE D'IENA 75016 PARIS, 75016, PARIS",
+      "size": "32",
+      "legal_dirigeants": [
+        {
+          "name": "ANIK CHAUMARTIN",
+          "role": "Commissaire aux comptes suppléant"
+        },
+        {
+          "name": "CHEE WUI CHUA",
+          "role": "Président de SAS"
+        },
+        {
+          "name": "CHRISTOPHER SIEW SAN PHONG",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "CHOW LOONG IAIN SEOW",
+          "role": "Directeur Général"
+        },
+        {
+          "name": "PRICEWATERHOUSECOOPERS AUDIT",
+          "role": "Commissaire aux comptes titulaire"
+        }
+      ],
+      "website": null,
+      "company_official_email": null,
+      "web_enrichment": null,
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Hotel La Tremoille",
+    "partial": {
+      "company_name": "HOTEL LA TREMOILLE",
+      "siren": "953691748",
+      "naf": "55.10Z",
+      "city": "PARIS",
+      "address": "14 RUE DE LA TREMOILLE 75008 PARIS, 75008, PARIS",
+      "size": "12",
+      "legal_dirigeants": [
+        {
+          "name": "FRANK BITBOL",
+          "role": "Commissaire aux comptes titulaire"
+        },
+        {
+          "name": "RC AUDIT",
+          "role": "personne morale"
+        },
+        {
+          "name": "JLJ",
+          "role": "personne morale"
+        }
+      ],
+      "website": "https://www.best-paris-hotels.org",
+      "company_official_email": null,
+      "web_enrichment": {
+        "root_url": "https://www.best-paris-hotels.org",
+        "pages_fetched": [
+          "https://www.best-paris-hotels.org"
+        ],
+        "emails": [],
+        "phones": [
+          "81962412",
+          "57180526",
+          "48860876",
+          "20260519",
+          "20260520"
+        ],
+        "linkedin_company": null,
+        "linkedin_profiles": [],
+        "instagram_account": null,
+        "facebook": null,
+        "twitter": null,
+        "youtube": null,
+        "team_page_url": null,
+        "team_page_text": null,
+        "error": null
+      },
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": "81962412",
+        "sources": [
+          "https://www.best-paris-hotels.org"
+        ],
+        "confidence": 35,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Ritz Paris Le Comptoir",
+    "partial": {
+      "company_name": "RITZ PARIS LE COMPTOIR",
+      "siren": "894335199",
+      "naf": "56.10C",
+      "city": "PARIS",
+      "address": "3 RUE LA BOETIE 75008 PARIS, 75008, PARIS",
+      "size": "12",
+      "legal_dirigeants": [
+        {
+          "name": "ROBERT ANDREW SWADE",
+          "role": "Président de SAS"
+        },
+        {
+          "name": "KPMG S.A",
+          "role": "personne morale"
+        }
+      ],
+      "website": "https://www.ritzparislecomptoir.com",
+      "company_official_email": null,
+      "web_enrichment": {
+        "root_url": "https://www.ritzparislecomptoir.com",
+        "pages_fetched": [
+          "https://www.ritzparislecomptoir.com/fr"
+        ],
+        "emails": [],
+        "phones": [
+          "3115740404"
+        ],
+        "linkedin_company": "https://fr.linkedin.com/company/ritzparislecomptoir",
+        "linkedin_profiles": [],
+        "instagram_account": "https://www.instagram.com/ritzparislecomptoir",
+        "facebook": null,
+        "twitter": null,
+        "youtube": null,
+        "team_page_url": null,
+        "team_page_text": null,
+        "error": null
+      },
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": "https://fr.linkedin.com/company/ritzparislecomptoir",
+        "sources": [
+          "https://www.ritzparislecomptoir.com"
+        ],
+        "confidence": 35,
+        "note": null
+      },
+      "company_instagram": {
+        "value": "https://www.instagram.com/ritzparislecomptoir",
+        "sources": [
+          "https://www.ritzparislecomptoir.com"
+        ],
+        "confidence": 35,
+        "note": null
+      },
+      "company_phone": {
+        "value": "3115740404",
+        "sources": [
+          "https://www.ritzparislecomptoir.com"
+        ],
+        "confidence": 35,
+        "note": null
+      }
+    }
+  },
+  {
+    "label": "Peninsula Paris",
+    "partial": {
+      "company_name": "PENINSULA PARIS",
+      "siren": "812199552",
+      "naf": "68.20B",
+      "city": "PARIS 8",
+      "address": "7-9 7 RUE TRONCHET 75008 PARIS 8, 75008, PARIS 8",
+      "size": "NN",
+      "legal_dirigeants": [
+        {
+          "name": "MOHAMMED NABIL HEFNI",
+          "role": "Président de SAS"
+        },
+        {
+          "name": "AUDICIAL",
+          "role": "Commissaire aux comptes titulaire"
+        },
+        {
+          "name": "CABINET TOUIL POCHON",
+          "role": "Commissaire aux comptes suppléant"
+        }
+      ],
+      "website": "https://www.thepeninsulaparis.fr",
+      "company_official_email": null,
+      "web_enrichment": {
+        "root_url": "https://www.thepeninsulaparis.fr",
+        "pages_fetched": [
+          "https://www.thepeninsulaparis.fr"
+        ],
+        "emails": [],
+        "phones": [],
+        "linkedin_company": null,
+        "linkedin_profiles": [],
+        "instagram_account": null,
+        "facebook": null,
+        "twitter": null,
+        "youtube": null,
+        "team_page_url": null,
+        "team_page_text": null,
+        "error": null
+      },
+      "team_page_text": null,
+      "company_linkedin": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_instagram": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      },
+      "company_phone": {
+        "value": null,
+        "sources": [],
+        "confidence": 0,
+        "note": null
+      }
+    }
+  }
+]
