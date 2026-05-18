@@ -134,6 +134,24 @@ def enrich_company_partial(sirene_company) -> dict:
 # Phase 2: build a final Lead given a decided decision-maker
 # ---------------------------------------------------------------------------
 
+def _name_in_text(first: str, last: str, text: Optional[str]) -> bool:
+    """Case-insensitive 'is this person mentioned in this blob'."""
+    if not text or not first or not last:
+        return False
+    text_l = text.lower()
+    return first.lower() in text_l and last.lower() in text_l
+
+
+def _name_in_linkedin_url(first: str, last: str, url: Optional[str]) -> bool:
+    """LinkedIn /in/<slug> slugs usually contain firstlast or first-last."""
+    if not url or not first or not last:
+        return False
+    import re as _re
+    slug = url.rstrip("/").rsplit("/", 1)[-1].lower()
+    slug = _re.sub(r"[^a-z]+", "", slug)
+    return (first.lower() in slug) and (last.lower() in slug)
+
+
 def finalize_lead(
     partial: dict,
     *,
@@ -143,7 +161,14 @@ def finalize_lead(
     person_sources: list[str],
     naf_label: Optional[str] = None,
 ) -> Lead:
-    """Build a triangulated Lead from a partial + Claude's decision-maker pick."""
+    """Build a triangulated Lead from a partial + Claude's decision-maker pick.
+
+    Auto-triangulates the person's name against the website team page, the
+    discovered email, and the LinkedIn profile slug. So a name initially backed
+    by one source (Sirene) can climb to high confidence if the website team
+    page mentions it AND the LinkedIn URL contains it AND the SMTP probe
+    accepts the matching email pattern.
+    """
     full_name = f"{person_first} {person_last}".strip()
     website = partial.get("website") or ""
     domain = ""
@@ -151,40 +176,67 @@ def finalize_lead(
         from urllib.parse import urlparse
         domain = (urlparse(website).hostname or "").removeprefix("www.")
 
-    # person_name confidence: from sources
-    name_field = (
-        ScoredField.from_multiple(full_name, person_sources)
-        if len(person_sources) >= 2
-        else ScoredField.from_single(full_name, person_sources[0] if person_sources else "claude", verified=False)
-    )
+    # We will gradually accumulate sources for the person name as we verify.
+    name_sources = list(person_sources)
+
+    # 1. Web team page corroborates the name?
+    if _name_in_text(person_first, person_last, partial.get("team_page_text")):
+        name_sources.append("website-team-page")
+
+    # 2. Discovered emails on the website mention this person?
+    web = partial.get("web_enrichment") or {}
+    web_emails = web.get("emails") or []
+    if any(
+        person_first.lower() in e.lower() and person_last.lower() in e.lower()
+        for e in web_emails
+    ):
+        name_sources.append("website-emails")
+
+    # Role
     role_field = (
         ScoredField.from_single(person_role, person_sources[0] if person_sources else "claude", verified=False)
         if person_role else ScoredField.missing()
     )
 
-    # email
+    # 3. Email pattern + SMTP verify
     email_field = ScoredField.missing()
     if domain and person_first and person_last:
         best, _ = find_best_email(person_first, person_last, domain)
-        if best and best.value:
+        if best and best.email:
             email_field = ScoredField(
                 value=best.email,
                 sources=[f"smtp:{domain}"],
                 confidence=best.confidence,
                 note=best.status,
             )
+            # SMTP deliverable email is a strong corroboration of the person
+            if best.status in ("deliverable", "catch_all"):
+                name_sources.append(f"smtp:{best.email}")
 
-    # LinkedIn for the person
-    li_person = find_linkedin_for_person(full_name, partial.get("company_name", ""))
-    li_field = ScoredField.from_single(
-        li_person, "ddg:linkedin-in", verified=False,
-    ) if li_person else ScoredField.missing()
+    # 4. Person LinkedIn (filter: slug must contain first+last)
+    li_raw = find_linkedin_for_person(full_name, partial.get("company_name", ""))
+    if _name_in_linkedin_url(person_first, person_last, li_raw):
+        li_field = ScoredField.from_single(li_raw, "ddg:linkedin-in", verified=True)
+        name_sources.append(f"linkedin:{li_raw}")
+    else:
+        li_field = ScoredField.missing()
 
-    # Instagram for the person (best-effort)
-    ig_person = find_instagram_for_person(full_name, partial.get("company_name", ""))
-    ig_field = ScoredField.from_single(
-        ig_person, "ddg:instagram-person", verified=False,
-    ) if ig_person else ScoredField.missing()
+    # 5. Person Instagram (best-effort, weak signal)
+    ig_raw = find_instagram_for_person(full_name, partial.get("company_name", ""))
+    ig_field = (
+        ScoredField.from_single(ig_raw, "ddg:instagram-person", verified=False)
+        if ig_raw else ScoredField.missing()
+    )
+
+    # Now build name_field with all accumulated sources
+    # Dedupe while preserving order
+    seen = set()
+    name_sources = [s for s in name_sources if not (s in seen or seen.add(s))]
+    name_field = (
+        ScoredField.from_multiple(full_name, name_sources)
+        if len(name_sources) >= 2
+        else ScoredField.from_single(full_name, name_sources[0] if name_sources else "claude")
+    )
 
     lead = Lead(
         company_name=partial["company_name"],

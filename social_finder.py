@@ -27,8 +27,9 @@ except ImportError:  # pragma: no cover
     DDGS = None  # type: ignore
 
 # Throttle to be polite. DDG rate-limits aggressively.
+# 1.5s is a good middle ground — under 1s frequently triggers 429s.
 _LAST_QUERY_AT = 0.0
-_MIN_INTERVAL_S = 2.5
+_MIN_INTERVAL_S = 1.5
 
 
 def _throttle() -> None:
@@ -80,19 +81,48 @@ def find_linkedin_for_person(name: str, company: str) -> Optional[str]:
     )
 
 
+def _company_slug(name: str) -> str:
+    """Lowercase ASCII slug for company-name matching against URL paths."""
+    import unicodedata
+    s = unicodedata.normalize("NFKD", name)
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
+    return re.sub(r"[^a-z0-9]+", "", s)
+
+
 def find_linkedin_for_company(company: str, location: Optional[str] = None) -> Optional[str]:
-    """Find the LinkedIn company page for the given company name."""
+    """Find the LinkedIn company page for the given company name.
+
+    Sanity check: the URL slug must contain (a chunk of) the company name.
+    Without this filter, DDG sometimes returns wildly unrelated companies.
+    """
     if not company:
         return None
     bits = [f'"{company}"', "site:linkedin.com/company/"]
     if location:
         bits.append(f'"{location}"')
     query = " ".join(bits)
-    results = _ddg_search(query, max_results=5)
-    return _first_matching(
-        results,
-        lambda h: h.endswith("linkedin.com") or h.endswith(".linkedin.com"),
-    )
+    results = _ddg_search(query, max_results=8)
+
+    company_s = _company_slug(company)
+    if not company_s:
+        return None
+    key = company_s[: min(len(company_s), 8)]  # first 8 chars of slug
+
+    for r in results:
+        url = r.get("href") or r.get("url") or ""
+        if not url:
+            continue
+        host = (urlparse(url).hostname or "").lower()
+        if not (host.endswith("linkedin.com") or host.endswith(".linkedin.com")):
+            continue
+        path = urlparse(url).path.lower()
+        if "/company/" not in path:
+            continue
+        # The /company/<slug> must include part of our company name
+        url_slug = re.sub(r"[^a-z0-9]+", "", path.split("/company/")[-1])
+        if key in url_slug or url_slug in company_s:
+            return url.split("?", 1)[0].rstrip("/")
+    return None
 
 
 def _valid_instagram_account(url: Optional[str]) -> Optional[str]:
