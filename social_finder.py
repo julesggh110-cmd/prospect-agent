@@ -21,15 +21,11 @@ import time
 from typing import Iterable, Optional
 from urllib.parse import urlparse
 
-try:
-    from ddgs import DDGS  # type: ignore
-except ImportError:  # pragma: no cover
-    DDGS = None  # type: ignore
+from brave_search import search_text  # auto-routes Brave→DDG with fallback
 
-# Throttle to be polite. DDG rate-limits aggressively.
-# 1.5s is a good middle ground — under 1s frequently triggers 429s.
+# Safety throttle (mostly relevant when falling back to DDG).
 _LAST_QUERY_AT = 0.0
-_MIN_INTERVAL_S = 1.5
+_MIN_INTERVAL_S = 1.2
 
 
 def _throttle() -> None:
@@ -42,15 +38,9 @@ def _throttle() -> None:
 
 
 def _ddg_search(query: str, *, max_results: int = 8) -> list[dict]:
-    """Run one DuckDuckGo search; return the raw result dicts (best-effort)."""
-    if DDGS is None:
-        return []
+    """Run one search via the active backend (Brave or DDG fallback)."""
     _throttle()
-    try:
-        with DDGS() as ddgs:
-            return list(ddgs.text(query, max_results=max_results)) or []
-    except Exception:
-        return []
+    return search_text(query, max_results=max_results)
 
 
 def _first_matching(results: Iterable[dict], host_pred) -> Optional[str]:

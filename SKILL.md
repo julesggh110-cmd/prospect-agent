@@ -1,7 +1,7 @@
 ---
 name: prospect-agent
 description: Generate verified B2B prospect lists from a natural-language request. For each company returns the decision-maker (matched to the requested persona) plus their email, phone, LinkedIn, Instagram, and the company's own LinkedIn / Instagram / Facebook. Cross-checks every value against multiple sources, never invents data, returns a confidence score per field and excludes contacts that can't be verified. Use whenever the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B", or any B2B prospection task.
-version: 0.2.2
+version: 0.3.0
 triggers:
   - prospection
   - prospects

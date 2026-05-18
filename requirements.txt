@@ -12,3 +12,4 @@ gspread>=6.0
 google-auth>=2.40
 google-auth-oauthlib>=1.2
 google-auth-httplib2>=0.2
+diskcache>=5.6

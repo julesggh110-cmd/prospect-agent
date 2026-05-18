@@ -37,6 +37,16 @@ REQUIRED = {
     ),
 }
 OPTIONAL = {
+    "PAPPERS_API_KEY": (
+        "Pappers API key — direct website/email/phone for FR companies (free 100/day)",
+        "https://www.pappers.fr/api",
+        False,
+    ),
+    "BRAVE_SEARCH_API_KEY": (
+        "Brave Search API key — stable replacement for DuckDuckGo (free 2k/month)",
+        "https://api-dashboard.search.brave.com/",
+        False,
+    ),
     "GOOGLE_SERVICE_ACCOUNT_JSON": (
         "Path to a Google service-account JSON key file",
         "https://console.cloud.google.com/iam-admin/serviceaccounts",
@@ -52,7 +62,7 @@ OPTIONAL = {
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return Path(__file__).resolve().parent
 
 
 def _read_env_file(path: Path) -> dict[str, str]:

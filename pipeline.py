@@ -20,13 +20,17 @@ Both functions are also exposed as CLI commands for manual testing.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import warnings
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Iterable, Optional
 
 from rich.console import Console
 
 from email_finder import find_best_email
+from pappers_client import enrich_with_pappers, have_pappers_key
 from social_finder import (
     find_instagram_for_company,
     find_instagram_for_person,
@@ -38,6 +42,37 @@ from web_enrichment import enrich_company_from_website
 from website_finder import find_company_website
 
 console = Console()
+
+# ---------------------------------------------------------------------------
+# Persistent cache for expensive lookups (website/social) across runs
+# ---------------------------------------------------------------------------
+try:
+    import diskcache  # type: ignore
+    _CACHE_DIR = Path(__file__).resolve().parent / "data" / "cache"
+    _CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _CACHE = diskcache.Cache(str(_CACHE_DIR))
+    _CACHE_TTL = 60 * 60 * 24 * 30  # 30 days
+except ImportError:
+    _CACHE = None
+    _CACHE_TTL = 0
+
+
+def _cached(namespace: str, key: str):
+    """Decorator factory for caching a function's result by (namespace, key)."""
+    def wrap(fn):
+        def inner(*args, **kwargs):
+            if _CACHE is None:
+                return fn(*args, **kwargs)
+            ck = f"{namespace}:{key}"
+            hit = _CACHE.get(ck, default=None)
+            if hit is not None:
+                return hit
+            val = fn(*args, **kwargs)
+            if val is not None:
+                _CACHE.set(ck, val, expire=_CACHE_TTL)
+            return val
+        return inner
+    return wrap
 
 
 # ---------------------------------------------------------------------------
@@ -88,30 +123,83 @@ def enrich_company_partial(sirene_company) -> dict:
             if d.get("nom")
         ]
 
-    # 1. Find website (Sirene doesn't have it)
-    website = find_company_website(name, city)
+    # 1. Try Pappers FIRST — direct website, email, phone (skip the DDG guess).
+    pappers_site: Optional[str] = None
+    pappers_email: Optional[str] = None
+    pappers_phone: Optional[str] = None
+    if have_pappers_key() and siren:
+        # cache Pappers per SIREN (rarely changes)
+        @_cached("pappers", siren)
+        def _fetch():
+            p = enrich_with_pappers(siren)
+            return p.model_dump() if p else None
+        pdata = _fetch()
+        if pdata:
+            pappers_site = pdata.get("site_web") or None
+            pappers_email = pdata.get("email") or None
+            pappers_phone = pdata.get("telephone") or None
+            # Pappers can give richer dirigeants — merge if Sirene was empty
+            if not dirs:
+                dirs = [
+                    {"name": f"{d.get('prenom','')} {d.get('nom','')}".strip(),
+                     "role": d.get("qualite") or ""}
+                    for d in (pdata.get("representants") or [])
+                    if d.get("nom")
+                ]
 
-    # 2. Scrape website
-    web = None
-    if website:
-        web = enrich_company_from_website(website, fetch_team_page=True)
+    # 2. Website: Pappers takes priority, else DDG-based finder (cached).
+    @_cached("website", f"{name}|{city or ''}")
+    def _find_site():
+        return pappers_site or find_company_website(name, city)
+    website = _find_site()
 
-    # 3. Search company LinkedIn / Instagram independently (for triangulation)
-    li_search = find_linkedin_for_company(name, city)
-    ig_search = find_instagram_for_company(name, city)
+    # 3. Scrape the website (cached per URL).
+    @_cached("web_enrichment", website or "no_site")
+    def _scrape():
+        if not website:
+            return None
+        we = enrich_company_from_website(website, fetch_team_page=True)
+        return we.model_dump() if we else None
+    web_dict = _scrape()
 
-    # 4. Triangulate company-level fields
+    # Pull the bits we need out of the scraped dict (lazy DDG: skip search if already known)
+    web_li = (web_dict or {}).get("linkedin_company")
+    web_ig = (web_dict or {}).get("instagram_account")
+    web_phones = (web_dict or {}).get("phones") or []
+
+    # 4. Search company LinkedIn ONLY if website didn't give it (lazy DDG).
+    if web_li:
+        li_search = None
+    else:
+        @_cached("li_co", f"{name}|{city or ''}")
+        def _li_search():
+            return find_linkedin_for_company(name, city)
+        li_search = _li_search()
+
+    if web_ig:
+        ig_search = None
+    else:
+        @_cached("ig_co", f"{name}|{city or ''}")
+        def _ig_search():
+            return find_instagram_for_company(name, city)
+        ig_search = _ig_search()
+
+    # 5. Triangulate company-level fields
     li_field = triangulate_url(
-        [(web.linkedin_company if web else None, website or "website"),
-         (li_search, "ddg:linkedin-company")],
+        [(web_li, website or "website"),
+         (li_search, "search:linkedin-company")],
     )
     ig_field = triangulate_url(
-        [(web.instagram_account if web else None, website or "website"),
-         (ig_search, "ddg:instagram-company")],
+        [(web_ig, website or "website"),
+         (ig_search, "search:instagram-company")],
     )
-    phone_field = ScoredField.missing()
-    if web and web.phones:
-        phone_field = triangulate_phone([(p, website or "website") for p in web.phones[:3]])
+    # Phone: combine Pappers + website-scraped
+    phone_sources: list[tuple[Optional[str], str]] = []
+    if pappers_phone:
+        phone_sources.append((pappers_phone, "pappers"))
+    for p in web_phones[:3]:
+        phone_sources.append((p, website or "website"))
+    phone_field = triangulate_phone(phone_sources) if phone_sources else ScoredField.missing()
 
     return {
         "company_name": name,
@@ -122,12 +210,29 @@ def enrich_company_partial(sirene_company) -> dict:
         "size": size,
         "legal_dirigeants": dirs,
         "website": website,
-        "web_enrichment": web.model_dump() if web else None,
-        "team_page_text": web.team_page_text if web else None,
+        "company_official_email": pappers_email,  # from Pappers, if any
+        "web_enrichment": web_dict,
+        "team_page_text": (web_dict or {}).get("team_page_text"),
         "company_linkedin": li_field.model_dump(),
         "company_instagram": ig_field.model_dump(),
         "company_phone": phone_field.model_dump(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase 1.5: parallel batch enrichment
+# ---------------------------------------------------------------------------
+
+def enrich_companies_parallel(companies: Iterable, *, max_workers: int = 3) -> list[dict]:
+    """Run enrich_company_partial on many companies concurrently.
+
+    Throttling on shared resources (Brave/DDG search, DNS) is enforced by the
+    per-module global locks. With 3 workers and ~1.5s throttle, we still respect
+    rate limits while overlapping the slow I/O across companies.
+    """
+    companies = list(companies)
+    with ThreadPoolExecutor(max_workers=max_workers) as exe:
+        return list(exe.map(enrich_company_partial, companies))
 
 
 # ---------------------------------------------------------------------------

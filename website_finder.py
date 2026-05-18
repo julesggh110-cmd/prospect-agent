@@ -21,10 +21,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-try:
-    from ddgs import DDGS  # type: ignore
-except ImportError:  # pragma: no cover
-    DDGS = None  # type: ignore
+from brave_search import search_text  # auto-routes Brave→DDG with fallback
 
 # Domains that aggregate companies but aren't the official site.
 # Anything ending in these (incl. subdomains) is rejected.
@@ -153,15 +150,12 @@ def _looks_alive(url: str) -> bool:
 _WEBSITE_CACHE: dict[str, Optional[str]] = {}
 
 
-def _query_ddg(query: str, max_results: int = 10) -> list[dict]:
-    if DDGS is None:
-        return []
+def _query_search(query: str, max_results: int = 10) -> list[dict]:
+    # brave_search.search_text has its own throttle when using Brave; the local
+    # _throttle is kept only as a safety net for DDG fallback. Brave's wrapper
+    # handles its own 1s pacing, so we don't double-sleep when it's active.
     _throttle()
-    try:
-        with DDGS() as ddgs:
-            return list(ddgs.text(query, max_results=max_results)) or []
-    except Exception:
-        return []
+    return search_text(query, max_results=max_results)
 
 
 def find_company_website(
@@ -180,7 +174,7 @@ def find_company_website(
     and merge candidates. Caches the result per (name, city) for the process
     lifetime to avoid re-querying when Claude iterates.
     """
-    if not name or DDGS is None:
+    if not name:
         return None
     cache_key = f"{name}|{city or ''}|{min_score}|{int(validate)}"
     if cache_key in _WEBSITE_CACHE:
@@ -193,7 +187,7 @@ def find_company_website(
 
     scored: dict[str, int] = {}
     for q in queries:
-        for r in _query_ddg(q, max_results=10):
+        for r in _query_search(q, max_results=10):
             url = r.get("href") or r.get("url") or ""
             if not url:
                 continue
@@ -236,13 +230,8 @@ def _cli() -> None:
     args = parser.parse_args()
 
     if args.debug:
-        # Replicate the search but show all candidates with their scores
-        _throttle()
-        with DDGS() as ddgs:
-            results = list(ddgs.text(
-                f'"{args.name}"' + (f' "{args.city}"' if args.city else ""),
-                max_results=10,
-            )) or []
+        query = f'"{args.name}"' + (f' "{args.city}"' if args.city else "")
+        results = _query_search(query, max_results=10)
         print(f"--- {len(results)} candidates ---")
         for r in results:
             url = r.get("href") or r.get("url") or ""

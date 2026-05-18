@@ -200,20 +200,51 @@ def verify_email(address: str) -> EmailCheck:
 
 
 def find_best_email(first: str, last: str, domain: str) -> tuple[Optional[EmailCheck], list[EmailCheck]]:
-    """Try each pattern and return (best_match, all_checks)."""
+    """Try each pattern, smart-exit early to save SMTP probes.
+
+    Early-exit rules:
+    - First probe `smtp_unreachable` (firewall blocks port 25) → STOP after 2 retries on different patterns;
+      every pattern hits the same MX and will fail the same way.
+    - First probe `no_mx` → STOP immediately, the domain has no mail server.
+    - First `deliverable` → STOP immediately (already implemented).
+    - First catch-all → STOP after recording it (return the most-likely pattern with
+      low confidence; trying more patterns is pointless on catch-all).
+    - After 4 consecutive `not_deliverable` (550) → STOP; server is responsive
+      but we're not guessing right, more tries are unlikely to find the real one.
+    """
     candidates = generate_email_patterns(first, last, domain)
     if not candidates:
         return None, []
 
     checks: list[EmailCheck] = []
     best: Optional[EmailCheck] = None
-    for addr in candidates:
+    consecutive_550 = 0
+
+    for i, addr in enumerate(candidates):
         c = verify_email(addr)
         checks.append(c)
-        if c.status == "deliverable":
-            return c, checks  # stop early on first deliverable
+
+        # Update best-so-far
         if best is None or c.confidence > best.confidence:
             best = c
+
+        status = c.status
+        if status == "deliverable":
+            return c, checks  # win, stop
+        if status == "catch_all":
+            return c, checks  # all addresses on this domain will succeed; the pattern is a guess
+        if status == "no_mx":
+            return c, checks  # domain has no mail server, all patterns will fail
+        if status == "smtp_unreachable" and i >= 1:
+            # First probe couldn't reach the SMTP server. Likely firewall blocking
+            # port 25 from cloud IPs. Other patterns will hit the same wall.
+            break
+        if status == "not_deliverable":
+            consecutive_550 += 1
+            if consecutive_550 >= 4:
+                break
+        else:
+            consecutive_550 = 0
 
     return best, checks
 
