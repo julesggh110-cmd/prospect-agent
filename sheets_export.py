@@ -1,16 +1,22 @@
 """
-Sheets export — push a list of Leads to a Google Sheet, with CSV fallback.
+Sheets export — push leads to Google Sheets, with Excel-FR-friendly CSV fallback.
 
-Two auth modes:
+CSV format choice matters:
+- Excel FR opens comma-CSV as a single column (it expects `;`).
+- Plain `,` CSVs with internal quotes can break older parsers.
+- A UTF-8 BOM + `;` delimiter opens cleanly in Excel FR, Excel EN, Numbers,
+  LibreOffice, and Google Sheets ("Import" → auto-detects).
+
+Two auth modes for Sheets:
 1. Service account JSON file (path in env var GOOGLE_SERVICE_ACCOUNT_JSON)
-   → simplest for automation. The user creates a Cloud project, enables the
-     Sheets API, downloads a service account JSON, shares the target sheet
-     with the service account email.
-2. (TBD) OAuth user flow — not implemented yet because it requires
-   interactive consent that's awkward inside Claude/Multica.
+   → simplest for automation. Create a Cloud project, enable the Sheets API,
+     download a service account JSON, share the target sheet (edit) with the
+     service-account email.
+2. (TBD) OAuth user flow — not implemented yet.
 
-If GOOGLE_SERVICE_ACCOUNT_JSON is not set OR DEFAULT_SHEET_ID is empty, we
-write a CSV to ./data/leads-<timestamp>.csv and return the file path.
+If Sheets isn't configured, we write **two** files side by side:
+- `leads-<timestamp>.csv` (semicolon, UTF-8 BOM) — opens in Excel
+- `leads-<timestamp>.xlsx` (real Excel binary) — opens in everything
 """
 from __future__ import annotations
 
@@ -111,12 +117,36 @@ def _push_to_sheet(leads: list, sheet_id: str, sa_path: str) -> str:
 
 
 def _write_csv(leads: list, out_dir: Optional[Path] = None) -> str:
-    out_dir = out_dir or Path(__file__).resolve().parent.parent / "data"
+    """Write two artifacts: Excel-FR-friendly CSV (semicolon + BOM) AND XLSX.
+
+    Returns the CSV path (the XLSX sits alongside with the same stem).
+    """
+    out_dir = out_dir or Path(__file__).resolve().parent / "data"
     out_dir.mkdir(parents=True, exist_ok=True)
-    fname = out_dir / time.strftime("leads-%Y-%m-%d-%H%M%S.csv")
-    with fname.open("w", encoding="utf-8", newline="") as fh:
-        writer = csv.writer(fh)
-        writer.writerow(HEADERS)
-        for lead in leads:
-            writer.writerow(_row_for(lead))
-    return str(fname)
+    stem = time.strftime("leads-%Y-%m-%d-%H%M%S")
+    csv_path = out_dir / f"{stem}.csv"
+    xlsx_path = out_dir / f"{stem}.xlsx"
+
+    rows = [HEADERS] + [_row_for(l) for l in leads]
+
+    # CSV with `;` + UTF-8 BOM (Excel FR opens it as a real table, no Import wizard)
+    with csv_path.open("w", encoding="utf-8-sig", newline="") as fh:
+        writer = csv.writer(fh, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+        writer.writerows(rows)
+
+    # XLSX (binary, no separator ambiguity ever, opens cleanly everywhere)
+    try:
+        from openpyxl import Workbook  # type: ignore
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "leads"
+        for row in rows:
+            ws.append([("" if v is None else v) for v in row])
+        # Freeze the header row
+        ws.freeze_panes = "A2"
+        wb.save(xlsx_path)
+    except ImportError:
+        # openpyxl not installed → CSV only, still works
+        pass
+
+    return str(csv_path)

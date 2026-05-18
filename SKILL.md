@@ -1,7 +1,7 @@
 ---
 name: prospect-agent
 description: Generate verified B2B prospect lists from a natural-language request. For each company returns the decision-maker (matched to the requested persona) plus their email, phone, LinkedIn, Instagram, and the company's own LinkedIn / Instagram / Facebook. Cross-checks every value against multiple sources, never invents data, returns a confidence score per field and excludes contacts that can't be verified. Use whenever the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B", or any B2B prospection task.
-version: 0.3.0
+version: 0.3.1
 triggers:
   - prospection
   - prospects
@@ -153,21 +153,34 @@ lead = finalize_lead(
 
 ### Step 7 — Export
 
+**ALWAYS use `export_leads()`** — never roll your own CSV writer. It produces:
+- A `.csv` with `;` delimiter + UTF-8 BOM → opens cleanly in Excel FR/EN
+  (a comma-CSV opens as a SINGLE column in Excel FR — terrible UX).
+- A `.xlsx` next to it (frozen header) → user double-clicks, gets a real table.
+
 ```python
 from sheets_export import export_leads
-output = export_leads([l for l in leads if not l.dropped])
-print(output)   # Google Sheets URL or CSV path
+csv_path = export_leads([l for l in leads if not l.dropped])
+print(csv_path)
+# Also created: same path with .xlsx extension
 ```
 
-Also report to the user:
-- How many leads were generated
-- How many were dropped and why (in aggregate)
-- The output URL/path
+If you must build a custom export for an unusual schema, you MUST:
+- Use `delimiter=";"` (Excel FR default)
+- Write with `encoding="utf-8-sig"` (BOM so Excel detects UTF-8)
+- Also write an `.xlsx` via openpyxl (much better UX)
+
+Then report to the user:
+- How many leads were generated and how many were dropped (with reasons)
+- The output paths (both `.csv` and `.xlsx`)
 - A sample of 2-3 leads with their confidence scores
 
 ## Hard rules — never do these
 
-- **NEVER scrape LinkedIn profile pages** (ToS violation, ban risk). Only use LinkedIn URLs discovered via DDG search.
+- **NEVER write a comma-delimited CSV** (`csv.writer(fh)` default). Excel FR
+  reads it as one giant column. Use `;` + BOM, or call `export_leads()`.
+- **NEVER scrape LinkedIn profile pages** (ToS violation, ban risk). Only use
+  LinkedIn URLs discovered via DDG/Brave search.
 - **NEVER invent emails, phones, names** even "plausible-looking" ones.
 - **NEVER commit `.env`** — it's gitignored.
 - **NEVER print or echo Anthropic / Google credentials** in your output.
