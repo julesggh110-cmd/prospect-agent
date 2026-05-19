@@ -30,6 +30,7 @@ from typing import Iterable, Optional
 from rich.console import Console
 
 from email_finder import find_best_email
+from name_utils import clean_person_name
 from pappers_client import enrich_with_pappers, have_pappers_key
 from social_finder import (
     find_instagram_for_company,
@@ -97,14 +98,18 @@ def enrich_company_partial(sirene_company) -> dict:
         city = c.city
         address = c.address_short
         size = c.tranche_effectif_salarie
-        dirs = [
-            {
-                "name": (d.full_name or "").strip(),
+        dirs = []
+        for d in c.dirigeants:
+            if not d.full_name:
+                continue
+            cleaned = clean_person_name(d.full_name)
+            dirs.append({
+                "name": cleaned.display or d.full_name.strip(),
+                "raw_name": d.full_name.strip(),
+                "first": cleaned.first,
+                "last": cleaned.last,
                 "role": d.qualite or d.type_dirigeant or "",
-            }
-            for d in c.dirigeants
-            if d.full_name
-        ]
+            })
     else:
         c = sirene_company
         name = c.get("nom_complet") or c.get("nom_raison_sociale") or "?"
@@ -116,12 +121,19 @@ def enrich_company_partial(sirene_company) -> dict:
             x for x in [siege.get("adresse"), siege.get("code_postal"), siege.get("libelle_commune")] if x
         )
         size = c.get("tranche_effectif_salarie")
-        dirs = [
-            {"name": f"{d.get('prenoms','')} {d.get('nom','')}".strip(),
-             "role": d.get("qualite") or d.get("type_dirigeant") or ""}
-            for d in (c.get("dirigeants") or [])
-            if d.get("nom")
-        ]
+        dirs = []
+        for d in (c.get("dirigeants") or []):
+            if not d.get("nom"):
+                continue
+            raw = f"{d.get('prenoms','')} {d.get('nom','')}".strip()
+            cleaned = clean_person_name(raw)
+            dirs.append({
+                "name": cleaned.display or raw,
+                "raw_name": raw,
+                "first": cleaned.first,
+                "last": cleaned.last,
+                "role": d.get("qualite") or d.get("type_dirigeant") or "",
+            })
 
     # 1. Try Pappers FIRST — direct website, email, phone (skip the DDG guess).
     pappers_site: Optional[str] = None
@@ -147,11 +159,45 @@ def enrich_company_partial(sirene_company) -> dict:
                     if d.get("nom")
                 ]
 
-    # 2. Website: Pappers takes priority, else DDG-based finder (cached).
+    # 2. Website: Pappers > DDG search > OSM tag > direct .fr/.com domain guess.
     @_cached("website", f"{name}|{city or ''}")
     def _find_site():
-        return pappers_site or find_company_website(name, city)
+        if pappers_site:
+            return pappers_site
+        ddg = find_company_website(name, city)
+        if ddg:
+            return ddg
+        return None
     website = _find_site()
+
+    # 2b. OSM fallback — for shop/resto/bar storefronts, OSM tags are gold.
+    # We also pull the OSM phone and Instagram/Facebook handles since we have them.
+    osm_data: Optional[dict] = None
+    if not website or not pappers_phone:
+        @_cached("osm", f"{name}|{city or ''}")
+        def _osm():
+            try:
+                from osm_finder import find_business_on_osm
+                return find_business_on_osm(name, city)
+            except Exception:
+                return None
+        osm_data = _osm()
+        if osm_data and not website and osm_data.get("website"):
+            website = osm_data["website"]
+
+    # 2c. Direct domain-guess fallback (e.g. lebibent.com). Free, fast, and works
+    # for ~30% of FR SMBs whose Sirene/Pappers record has no website.
+    if not website:
+        @_cached("guess", f"{name}|{city or ''}|{naf or ''}")
+        def _guess():
+            try:
+                from domain_guess import guess_website
+                return guess_website(name, city=city, sector_hint=naf)
+            except Exception:
+                return None
+        guess = _guess()
+        if guess:
+            website = guess
 
     # 3. Scrape the website (cached per URL).
     @_cached("web_enrichment", website or "no_site")
@@ -200,8 +246,12 @@ def enrich_company_partial(sirene_company) -> dict:
     for p in web_phones[:3]:
         phone_sources.append((p, website or "website"))
 
-    # SMB fallback: if we still have no phone, hit Pages Jaunes. Cached per
-    # (name, city) since PJ is rate-sensitive.
+    # SMB fallback: if we still have no phone, use OSM's phone tag (free,
+    # no anti-bot). PJ is now blocked behind Cloudflare so we only attempt it
+    # as a last resort and accept silent failures.
+    if not phone_sources and osm_data and osm_data.get("phone"):
+        phone_sources.append((osm_data["phone"], "osm"))
+
     if not phone_sources:
         @_cached("pagesjaunes", f"{name}|{city or ''}")
         def _pj():
@@ -215,24 +265,42 @@ def enrich_company_partial(sirene_company) -> dict:
             phone_sources.append((pj_phone, "pagesjaunes"))
 
     phone_field = triangulate_phone(phone_sources) if phone_sources else ScoredField.missing()
-    # If Pappers OR Pages Jaunes is the source (one alone is enough), boost to 70.
+    # If Pappers / OSM / Pages Jaunes is the source (one alone is enough), boost to 70.
     if phone_field.value and phone_field.confidence < 70:
         srcs = phone_field.sources or []
-        if any(s in ("pappers", "pagesjaunes") for s in srcs):
+        if any(s in ("pappers", "pagesjaunes", "osm") for s in srcs):
             phone_field.confidence = 70
             phone_field.note = (phone_field.note or "") + " · authoritative-source"
 
     # Company email candidates: Pappers (official greffe) + generic emails scraped
-    # from the website (contact@, info@, ...). These are NOT the decision-maker
-    # personal email — they go in the `company_email` field, kept separate so the
-    # user is never confused about what they actually have.
+    # from the website (contact@, info@, ...) + OSM email tag. These are NOT
+    # the decision-maker personal email — they go in the `company_email` field,
+    # kept separate so the user is never confused about what they actually have.
     company_email_candidates: list[str] = []
     if pappers_email:
         company_email_candidates.append(pappers_email)
     for e in ((web_dict or {}).get("emails_generic") or []):
         if e not in company_email_candidates:
             company_email_candidates.append(e)
+    if osm_data and osm_data.get("email") and osm_data["email"] not in company_email_candidates:
+        company_email_candidates.append(osm_data["email"])
     company_email = company_email_candidates[0] if company_email_candidates else None
+
+    # Promote OSM-discovered Instagram / Facebook handles if we got them and the
+    # website scrape didn't.
+    if osm_data:
+        osm_ig = osm_data.get("instagram")
+        if osm_ig and not web_ig:
+            # Turn '@bibent' or 'bibent' into a full URL for consistency
+            handle = osm_ig.lstrip("@").strip()
+            if handle and not handle.startswith("http"):
+                osm_ig_url = f"https://instagram.com/{handle}"
+            else:
+                osm_ig_url = handle
+            ig_field = triangulate_url(
+                [(osm_ig_url, "osm"),
+                 (ig_field.value, ig_field.sources[0] if ig_field.sources else "ig")],
+            )
 
     return {
         "company_name": name,

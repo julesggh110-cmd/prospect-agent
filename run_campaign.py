@@ -93,6 +93,9 @@ def run(
     campaign_id: str | None = None,
     llm_decider: bool = False,
     retry_dropped: bool = False,
+    generate_emails: bool = False,
+    sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
+    sender_company: str = "Bear Brothers",
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -174,13 +177,18 @@ def run(
                 chosen_role = decision.get("person_role") or persona_role_hint or ""
                 chosen_sources = decision.get("person_sources") or ["sirene", "llm-decider"]
 
-        # Fallback: first legal dirigeant
+        # Fallback: first legal dirigeant — prefer the cleaned first/last from
+        # name_utils (handles 'DIDIER JACQUES EMMANUEL YVON VILLEMEY' → 'Didier'/'Villemey').
         if not chosen_first or not chosen_last:
             d = dirs[0]
-            parts = d.get("name", "").split()
-            if len(parts) < 2:
-                continue
-            chosen_first, chosen_last = parts[0], parts[-1]
+            chosen_first = d.get("first") or ""
+            chosen_last = d.get("last") or ""
+            if not chosen_first or not chosen_last:
+                parts = (d.get("name") or "").split()
+                if len(parts) < 2:
+                    continue
+                chosen_first = chosen_first or parts[0]
+                chosen_last = chosen_last or parts[-1]
             chosen_role = persona_role_hint or d.get("role") or ""
 
         lead = finalize_lead(
@@ -220,7 +228,27 @@ def run(
     print(f"[Store] +{n_new} new leads, {n_existing} re-seen "
           f"(campaign_id={campaign_id})")
 
-    # 3d. Optional HubSpot push (only kept leads)
+    # 3d. Optional cold email generation (Haiku, ~$0.0015/lead, FR personalized)
+    if generate_emails:
+        from cold_email import generate_for_leads
+        kept_for_email = [l for l in leads if not l.dropped]
+        emails = generate_for_leads(
+            kept_for_email,
+            sender_offer=sender_offer,
+            sender_company=sender_company,
+        )
+        # Attach the generated email body to the lead model as extra fields so
+        # the XLSX export picks them up.
+        for l in kept_for_email:
+            key = l.company_siren or l.company_name
+            ce = emails.get(key)
+            if ce:
+                setattr(l, "cold_email_subject", ce.subject)
+                setattr(l, "cold_email_body", ce.body)
+                setattr(l, "cold_email_angle", ce.angle)
+        print(f"[Cold-Email] {len(emails)}/{len(kept_for_email)} drafted")
+
+    # 3e. Optional HubSpot push (only kept leads)
     if push_to_hubspot:
         from hubspot_client import sync_leads_to_hubspot
         created, updated, msg = sync_leads_to_hubspot([l for l in leads if not l.dropped])
@@ -286,6 +314,13 @@ def _cli() -> None:
     p.add_argument("--retry-dropped", action="store_true",
                    help="After the main pass, retry dropped leads with relaxed thresholds "
                         "(min_contact_conf=30). Self-critique multi-pass.")
+    p.add_argument("--generate-emails", action="store_true",
+                   help="Generate a personalized FR cold email per kept lead via "
+                        "Claude Haiku. ~$0.0015/lead. Saved into the XLSX export.")
+    p.add_argument("--sender-offer", default="spiritueux premium français pour cartes bars et restaurants",
+                   help="One-line description of what you're selling (FR)")
+    p.add_argument("--sender-company", default="Bear Brothers",
+                   help="Your company name (signed/referenced in the email)")
     args = p.parse_args()
 
     if not any([args.query, args.naf, args.code_postal, args.departement, args.region]):
@@ -314,6 +349,9 @@ def _cli() -> None:
         campaign_id=args.campaign_id,
         llm_decider=args.llm_decider,
         retry_dropped=args.retry_dropped,
+        generate_emails=args.generate_emails,
+        sender_offer=args.sender_offer,
+        sender_company=args.sender_company,
     )
 
 

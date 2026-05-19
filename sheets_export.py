@@ -51,6 +51,8 @@ HEADERS = [
     "person_instagram", "person_instagram_conf",
     "overall_score",
     "is_new_lead",
+    # Cold email (only filled when --generate-emails was passed)
+    "cold_email_subject", "cold_email_body", "cold_email_angle",
     "dropped", "drop_reason",
 ]
 
@@ -83,6 +85,9 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         *scored(lead.person_instagram),
         lead.overall_score,
         "new" if getattr(lead, "is_new_lead", False) else "",
+        getattr(lead, "cold_email_subject", "") or "",
+        getattr(lead, "cold_email_body", "") or "",
+        getattr(lead, "cold_email_angle", "") or "",
         "yes" if lead.dropped else "",
         lead.drop_reason or "",
     ]

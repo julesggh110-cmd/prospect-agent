@@ -28,6 +28,7 @@ data/*.json
 data/*.db
 data/cache/
 !data/.gitkeep
+output/
 
 # OS
 .DS_Store

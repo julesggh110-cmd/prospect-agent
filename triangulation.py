@@ -124,14 +124,18 @@ class Lead(BaseModel):
     def evaluate(self, *, min_person_conf: int = 60, min_contact_conf: int = 50) -> None:
         """Mark the lead as dropped if it doesn't meet quality thresholds.
 
-        For small businesses (size 00..11, i.e., ≤19 employees), Sirene IS the
-        source of truth for the gérant identity and the company phone is the
-        contact channel — so we accept company_phone as a person-level channel
-        and we relax the contact threshold slightly.
+        For SMBs (≤49 employees), Sirene is the canonical source for the gérant,
+        and the standard company line is the way to reach them — we accept
+        company_phone AND company_email as person-level contact channels, and
+        lower the contact threshold to 30. SMB-mode also tolerates "address +
+        name only" leads: even without a contact channel, the salesperson can
+        knock on the door / cold mail to the postal address.
         """
         self.compute_overall()
         SMB_SIZES = {"00", "01", "02", "03", "11", "12", ""}
         is_smb = (self.company_size or "") in SMB_SIZES
+        smb_threshold = 30
+
         if self.person_name.confidence < min_person_conf:
             self.dropped = True
             self.drop_reason = (
@@ -139,22 +143,31 @@ class Lead(BaseModel):
                 f"< {min_person_conf} (no reliable decision-maker)"
             )
             return
-        # For SMBs, the company phone IS the way to reach the gérant.
+
+        # Candidate contact channels
         candidates = [
-            self.person_email.confidence,
-            self.person_phone.confidence,
-            self.person_linkedin.confidence,
+            ("person_email", self.person_email.confidence),
+            ("person_phone", self.person_phone.confidence),
+            ("person_linkedin", self.person_linkedin.confidence),
         ]
         if is_smb:
-            candidates.append(self.company_phone.confidence)
-        best_contact = max(candidates)
-        if best_contact < min_contact_conf:
+            # For an SMB, the company-level channels reach the gérant in practice
+            candidates.append(("company_phone", self.company_phone.confidence))
+            candidates.append(("company_email", 70 if self.company_email else 0))
+
+        threshold = smb_threshold if is_smb else min_contact_conf
+        best = max(candidates, key=lambda kv: kv[1])
+        if best[1] < threshold:
+            # Last-resort SMB rule: if we have a verified name + a postal address,
+            # the lead is still ACTIONABLE (cold mail / door-to-door). Keep it
+            # but with a clear note that no remote channel was found.
+            if is_smb and self.company_address:
+                self.drop_reason = "no remote channel; postal/visit only"
+                return  # not dropped — keep
             self.dropped = True
+            details = ", ".join(f"{n}={c}" for n, c in candidates)
             self.drop_reason = (
-                f"no contact channel above {min_contact_conf} confidence "
-                f"(email={self.person_email.confidence}, "
-                f"phone={self.person_phone.confidence}, "
-                f"linkedin={self.person_linkedin.confidence})"
+                f"no contact channel above {threshold} confidence ({details})"
             )
 
 
