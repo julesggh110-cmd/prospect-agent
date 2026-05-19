@@ -193,21 +193,34 @@ def enrich_company_partial(sirene_company) -> dict:
         [(web_ig, website or "website"),
          (ig_search, "search:instagram-company")],
     )
-    # Phone: combine Pappers + website-scraped. Pappers data comes from the
-    # official greffe register — it's authoritative even alone, so we boost
-    # the confidence when it's the only source we have.
+    # Phone: combine Pappers + website-scraped + Pages Jaunes fallback.
     phone_sources: list[tuple[Optional[str], str]] = []
     if pappers_phone:
         phone_sources.append((pappers_phone, "pappers"))
     for p in web_phones[:3]:
         phone_sources.append((p, website or "website"))
+
+    # SMB fallback: if we still have no phone, hit Pages Jaunes. Cached per
+    # (name, city) since PJ is rate-sensitive.
+    if not phone_sources:
+        @_cached("pagesjaunes", f"{name}|{city or ''}")
+        def _pj():
+            try:
+                from pagesjaunes_client import find_phone_on_pagesjaunes
+                return find_phone_on_pagesjaunes(name, city)
+            except Exception:
+                return None
+        pj_phone = _pj()
+        if pj_phone:
+            phone_sources.append((pj_phone, "pagesjaunes"))
+
     phone_field = triangulate_phone(phone_sources) if phone_sources else ScoredField.missing()
-    # If Pappers is the only source AND we have a value, treat it as verified
-    if (phone_field.value and pappers_phone
-            and phone_field.confidence < 70
-            and "pappers" in (phone_field.sources or [])):
-        phone_field.confidence = 70
-        phone_field.note = (phone_field.note or "") + " · pappers-authoritative"
+    # If Pappers OR Pages Jaunes is the source (one alone is enough), boost to 70.
+    if phone_field.value and phone_field.confidence < 70:
+        srcs = phone_field.sources or []
+        if any(s in ("pappers", "pagesjaunes") for s in srcs):
+            phone_field.confidence = 70
+            phone_field.note = (phone_field.note or "") + " · authoritative-source"
 
     return {
         "company_name": name,

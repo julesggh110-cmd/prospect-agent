@@ -85,11 +85,13 @@ def run(
     volume: int = 10,
     persona_role_hint: str | None = None,
     output_stem: str | None = None,
-    max_workers: int = 3,
+    max_workers: int = 8,
     icp: dict | None = None,
     only_new: bool = False,
     push_to_hubspot: bool = False,
     campaign_id: str | None = None,
+    llm_decider: bool = False,
+    retry_dropped: bool = False,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -149,22 +151,60 @@ def run(
         dirs = p.get("legal_dirigeants") or []
         if not dirs:
             continue
-        d = dirs[0]
-        parts = d.get("name", "").split()
-        if len(parts) < 2:
-            continue
-        first, last = parts[0], parts[-1]
-        role = persona_role_hint or d.get("role") or ""
+
+        # Default: take the first legal director.
+        chosen_first, chosen_last, chosen_role = None, None, None
+        chosen_sources = ["sirene"]
+
+        # Optional: LLM-driven decision-maker pick (great for big companies)
+        if llm_decider:
+            from decision_maker_llm import pick as llm_pick
+            decision = llm_pick(
+                company_name=p["company_name"],
+                sector_hint=p.get("naf") or "",
+                persona_hint=persona_role_hint or "operational decision-maker",
+                legal_dirigeants=dirs,
+                team_page_text=p.get("team_page_text"),
+            )
+            if decision and decision.get("person_first") and decision.get("person_last"):
+                chosen_first = decision["person_first"]
+                chosen_last = decision["person_last"]
+                chosen_role = decision.get("person_role") or persona_role_hint or ""
+                chosen_sources = decision.get("person_sources") or ["sirene", "llm-decider"]
+
+        # Fallback: first legal dirigeant
+        if not chosen_first or not chosen_last:
+            d = dirs[0]
+            parts = d.get("name", "").split()
+            if len(parts) < 2:
+                continue
+            chosen_first, chosen_last = parts[0], parts[-1]
+            chosen_role = persona_role_hint or d.get("role") or ""
+
         lead = finalize_lead(
             p,
-            person_first=first,
-            person_last=last,
-            person_role=role,
-            person_sources=["sirene"],
+            person_first=chosen_first,
+            person_last=chosen_last,
+            person_role=chosen_role,
+            person_sources=chosen_sources,
         )
-        # mark whether this is a fresh discovery
         setattr(lead, "is_new_lead", lead.company_siren in new_sirens)
         leads.append(lead)
+
+    # 3a-bis. Self-critique multi-pass: retry dropped leads with relaxed thresholds.
+    if retry_dropped:
+        retried = 0
+        for lead in leads:
+            if not lead.dropped:
+                continue
+            # Re-evaluate with a relaxed contact threshold (30 vs 50)
+            lead.dropped = False
+            lead.drop_reason = None
+            lead.evaluate(min_person_conf=60, min_contact_conf=30)
+            if not lead.dropped:
+                retried += 1
+        if retried:
+            print(f"[Self-critique] Recovered {retried} leads with relaxed thresholds")
 
     # 3b. ICP scoring (optional)
     if icp:
@@ -225,8 +265,8 @@ def _cli() -> None:
                    help="Hint for the role label in the output (e.g., 'Gérant', 'DRH')")
     p.add_argument("--output", dest="output_stem",
                    help="Output filename stem (e.g., 'prospects-dentistes-lyon')")
-    p.add_argument("--max-workers", type=int, default=3,
-                   help="Parallel enrichment workers (default 3)")
+    p.add_argument("--max-workers", type=int, default=8,
+                   help="Parallel enrichment workers (default 8)")
     p.add_argument("--icp-preset", choices=["cavistes-paris", "palaces-paris"],
                    help="Apply a preset ICP profile and add icp_score column")
     p.add_argument("--only-new", action="store_true",
@@ -234,6 +274,12 @@ def _cli() -> None:
     p.add_argument("--push-to-hubspot", action="store_true",
                    help="Sync kept leads to HubSpot CRM (needs HUBSPOT_ACCESS_TOKEN)")
     p.add_argument("--campaign-id", help="Tag this run in lead_store")
+    p.add_argument("--llm-decider", action="store_true",
+                   help="Use Claude (Haiku) to pick the operational decision-maker "
+                        "from the team page instead of the legal director. ~$0.001/lead.")
+    p.add_argument("--retry-dropped", action="store_true",
+                   help="After the main pass, retry dropped leads with relaxed thresholds "
+                        "(min_contact_conf=30). Self-critique multi-pass.")
     args = p.parse_args()
 
     if not any([args.query, args.naf, args.code_postal, args.departement, args.region]):
@@ -259,6 +305,8 @@ def _cli() -> None:
         only_new=args.only_new,
         push_to_hubspot=args.push_to_hubspot,
         campaign_id=args.campaign_id,
+        llm_decider=args.llm_decider,
+        retry_dropped=args.retry_dropped,
     )
 
 
