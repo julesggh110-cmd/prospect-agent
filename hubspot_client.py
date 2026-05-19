@@ -132,10 +132,29 @@ def _upsert_company(hs, lead) -> str:
         props["website"] = lead.company_website
     if lead.company_linkedin.value:
         props["linkedin_company_page"] = lead.company_linkedin.value
+    # HubSpot `industry` is a strict enum (ACCOUNTING, FOOD_BEVERAGES, ...) — our
+    # free-text NAF label doesn't map cleanly. Put it in `description` instead so
+    # the user keeps the info without enum-validation errors.
+    desc_bits = []
     if lead.company_naf_label:
-        props["industry"] = lead.company_naf_label[:50]
+        desc_bits.append(f"NAF: {lead.company_naf_label} ({lead.company_naf or ''})")
+    if lead.company_siren:
+        desc_bits.append(f"SIREN: {lead.company_siren}")
+    if desc_bits:
+        props["description"] = " · ".join(desc_bits)[:500]
+    # HubSpot `numberofemployees` expects a number, not the Sirene "11" code →
+    # convert the Sirene size bracket to an approximate employee count.
     if lead.company_size:
-        props["numberofemployees"] = lead.company_size
+        # Sirene size codes → midpoint of bracket (approximate)
+        size_map = {
+            "00": "0", "01": "1", "02": "3", "03": "7",
+            "11": "15", "12": "35", "21": "75", "22": "150",
+            "31": "350", "32": "750", "41": "1500", "42": "3500",
+            "51": "7500", "52": "15000", "53": "30000",
+        }
+        emp = size_map.get(lead.company_size)
+        if emp:
+            props["numberofemployees"] = emp
 
     # Try to find existing by domain first, then by name
     existing_id = None
