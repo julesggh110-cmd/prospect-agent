@@ -128,6 +128,21 @@ class SearchResponse(BaseModel):
 # Client
 # ---------------------------------------------------------------------------
 
+def _etab_to_siege(etab: dict, fallback: Optional[dict] = None) -> dict:
+    """Turn a matching_etablissement dict into a Siege-compatible dict."""
+    fallback = fallback or {}
+    return {
+        "siret": etab.get("siret") or fallback.get("siret"),
+        "adresse": etab.get("adresse") or fallback.get("adresse"),
+        "code_postal": etab.get("code_postal") or fallback.get("code_postal"),
+        "libelle_commune": etab.get("libelle_commune") or fallback.get("libelle_commune"),
+        "departement": (etab.get("code_postal") or "")[:2] or fallback.get("departement"),
+        "region": fallback.get("region"),
+        "latitude": etab.get("latitude") or fallback.get("latitude"),
+        "longitude": etab.get("longitude") or fallback.get("longitude"),
+    }
+
+
 class SireneClient:
     """Thin synchronous client for recherche-entreprises.api.gouv.fr.
 
@@ -154,11 +169,24 @@ class SireneClient:
         tranche_effectif: Optional[str] = None,
         page: int = 1,
         per_page: int = 25,
+        local_only: bool = True,
     ) -> SearchResponse:
         """Search active French companies. Returns the first page by default.
 
-        At least one filter must be provided. Iterate pages with `page=` if
-        you need more than `per_page` results.
+        IMPORTANT — `departement` / `code_postal` filter on ESTABLISHMENTS, not
+        on the legal HQ. A chain like "B&B Hotels" whose HQ is in Brest will
+        appear in a `departement=69` query because they have hotels in Lyon.
+        The result rows nevertheless show the Brest HQ in `siege`.
+
+        We use `inclure_etablissements=true` to get the matching establishments
+        (the actual Lyon hotels) and, when `local_only=True` (default), we
+        rewrite `siege` to point at the first matching establishment that's
+        actually in the requested geo. This gives Bear-Brothers-style local
+        prospection results: one Lyon hotel = one lead, even if the chain HQ
+        is elsewhere.
+
+        Pass `local_only=False` to keep the HQ unchanged (useful when you want
+        to prospect the chain itself, not each location).
         """
         params: dict[str, str | int] = {"page": page, "per_page": per_page}
         if query:
@@ -173,10 +201,33 @@ class SireneClient:
             params["region"] = region
         if tranche_effectif:
             params["tranche_effectif_salarie"] = tranche_effectif
+        if local_only and (code_postal or departement):
+            params["inclure_etablissements"] = "true"
 
         resp = self._client.get("/search", params=params)
         resp.raise_for_status()
-        return SearchResponse.model_validate(resp.json())
+        data = resp.json()
+
+        # Rewrite siege to the local establishment when local_only is True
+        if local_only and (code_postal or departement):
+            for c in data.get("results", []):
+                matches = c.get("matching_etablissements") or []
+                if not matches:
+                    continue
+                # Pick the first matching establishment whose address truly
+                # matches the requested filter
+                for m in matches:
+                    mcp = m.get("code_postal") or ""
+                    if code_postal and mcp.startswith(str(code_postal)):
+                        c["siege"] = _etab_to_siege(m, fallback=c.get("siege"))
+                        c.setdefault("_local_etab", m)
+                        break
+                    elif departement and mcp.startswith(str(departement).zfill(2)):
+                        c["siege"] = _etab_to_siege(m, fallback=c.get("siege"))
+                        c.setdefault("_local_etab", m)
+                        break
+
+        return SearchResponse.model_validate(data)
 
     def close(self) -> None:
         self._client.close()
