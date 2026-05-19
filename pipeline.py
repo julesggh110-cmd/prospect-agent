@@ -404,6 +404,32 @@ def finalize_lead(
             # Otherwise (not_deliverable, no_mx, smtp_unreachable without corroboration)
             # we leave email_field as missing — better empty than wrong.
 
+    # 3b. Free Mobile Finder — try to find a personal mobile (06/07)
+    # near the person's name in press pages, Calendly, articles, blogs.
+    # Best-effort: ~15-25% hit rate (vs 70% with paid Kaspr). Always free.
+    person_phone_field = ScoredField.missing()
+    try:
+        from mobile_finder import find_mobile_for_person
+        @_cached("mobile", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
+        def _mobile():
+            return find_mobile_for_person(
+                person_first, person_last,
+                partial.get("company_name") or "",
+                website=partial.get("website"),
+            )
+        mobile_result = _mobile()
+        if mobile_result:
+            mobile, source = mobile_result
+            person_phone_field = ScoredField(
+                value=mobile,
+                sources=[f"mobile-finder:{source}"],
+                confidence=75,
+                note=f"mobile found via {source}",
+            )
+            name_sources.append(f"mobile-near-name:{source}")
+    except Exception:
+        pass
+
     # 4. Person LinkedIn (filter: slug must contain first+last)
     li_raw = find_linkedin_for_person(full_name, partial.get("company_name", ""))
     if _name_in_linkedin_url(person_first, person_last, li_raw):
@@ -451,6 +477,7 @@ def finalize_lead(
         person_name=name_field,
         person_role=role_field,
         person_email=email_field,
+        person_phone=person_phone_field,
         person_linkedin=li_field,
         person_instagram=ig_field,
     )
