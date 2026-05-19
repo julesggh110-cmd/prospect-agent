@@ -222,6 +222,18 @@ def enrich_company_partial(sirene_company) -> dict:
             phone_field.confidence = 70
             phone_field.note = (phone_field.note or "") + " · authoritative-source"
 
+    # Company email candidates: Pappers (official greffe) + generic emails scraped
+    # from the website (contact@, info@, ...). These are NOT the decision-maker
+    # personal email — they go in the `company_email` field, kept separate so the
+    # user is never confused about what they actually have.
+    company_email_candidates: list[str] = []
+    if pappers_email:
+        company_email_candidates.append(pappers_email)
+    for e in ((web_dict or {}).get("emails_generic") or []):
+        if e not in company_email_candidates:
+            company_email_candidates.append(e)
+    company_email = company_email_candidates[0] if company_email_candidates else None
+
     return {
         "company_name": name,
         "siren": siren,
@@ -231,7 +243,9 @@ def enrich_company_partial(sirene_company) -> dict:
         "size": size,
         "legal_dirigeants": dirs,
         "website": website,
-        "company_official_email": pappers_email,  # from Pappers, if any
+        "company_email": company_email,
+        "company_email_all": company_email_candidates,
+        "company_official_email": pappers_email,  # legacy alias
         "web_enrichment": web_dict,
         "team_page_text": (web_dict or {}).get("team_page_text"),
         "company_linkedin": li_field.model_dump(),
@@ -342,20 +356,53 @@ def finalize_lead(
         if person_role else ScoredField.missing()
     )
 
-    # 3. Email pattern + SMTP verify
+    # 3. Email pattern + SMTP verify. We REFUSE to return a fake personal email
+    # if SMTP couldn't actually confirm it AND we don't have an independent
+    # corroborating source (the personal pattern email also appearing scraped on
+    # the website). Otherwise the user thinks they have Marie's email when in
+    # reality it bounces.
     email_field = ScoredField.missing()
     if domain and person_first and person_last:
         best, _ = find_best_email(person_first, person_last, domain)
         if best and best.email:
-            email_field = ScoredField(
-                value=best.email,
-                sources=[f"smtp:{domain}"],
-                confidence=best.confidence,
-                note=best.status,
+            # Does the pattern email appear on the company website? If yes,
+            # that's an INDEPENDENT confirmation (not just an SMTP guess).
+            personal_emails_on_site = (
+                (partial.get("web_enrichment") or {}).get("emails_personal") or []
             )
-            # SMTP deliverable email is a strong corroboration of the person
-            if best.status in ("deliverable", "catch_all"):
+            confirmed_on_site = best.email.lower() in {e.lower() for e in personal_emails_on_site}
+
+            if best.status == "deliverable":
+                # SMTP confirmed it routes — high confidence
+                email_field = ScoredField(
+                    value=best.email,
+                    sources=[f"smtp-deliverable:{domain}"],
+                    confidence=85 if not confirmed_on_site else 95,
+                    note="smtp-deliverable" + (" + on-site" if confirmed_on_site else ""),
+                )
                 name_sources.append(f"smtp:{best.email}")
+            elif confirmed_on_site:
+                # Pattern is a guess via SMTP, but the SAME email appears on the
+                # company website — strong independent signal, keep with medium conf.
+                email_field = ScoredField(
+                    value=best.email,
+                    sources=["website-personal-email", f"pattern:{domain}"],
+                    confidence=80,
+                    note="confirmed on company website",
+                )
+                name_sources.append(f"website-email:{best.email}")
+            elif best.status == "catch_all":
+                # Catch-all server accepts anything — the pattern is a GUESS.
+                # We expose it but with low confidence + crystal-clear note so
+                # the user doesn't believe it's verified.
+                email_field = ScoredField(
+                    value=best.email,
+                    sources=["pattern-guess:" + domain],
+                    confidence=35,
+                    note="catch-all domain — email is a likely pattern, NOT verified",
+                )
+            # Otherwise (not_deliverable, no_mx, smtp_unreachable without corroboration)
+            # we leave email_field as missing — better empty than wrong.
 
     # 4. Person LinkedIn (filter: slug must contain first+last)
     li_raw = find_linkedin_for_person(full_name, partial.get("company_name", ""))
@@ -397,6 +444,7 @@ def finalize_lead(
         company_address=partial.get("address"),
         company_size=partial.get("size"),
         company_website=partial.get("website"),
+        company_email=partial.get("company_email"),
         company_linkedin=ScoredField(**partial["company_linkedin"]),
         company_instagram=ScoredField(**partial["company_instagram"]),
         company_phone=ScoredField(**partial["company_phone"]),

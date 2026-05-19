@@ -86,6 +86,8 @@ class Lead(BaseModel):
     company_instagram: ScoredField = Field(default_factory=ScoredField.missing)
     company_facebook: Optional[str] = None
     company_phone: ScoredField = Field(default_factory=ScoredField.missing)
+    # Generic shared inbox (contact@, info@, ...) — never confused with person_email
+    company_email: Optional[str] = None
 
     # Decision-maker
     person_name: ScoredField = Field(default_factory=ScoredField.missing)

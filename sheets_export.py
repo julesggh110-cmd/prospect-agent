@@ -38,6 +38,7 @@ HEADERS = [
     "icp_score",
     "company_name", "company_siren", "company_naf_label",
     "company_city", "company_address", "company_size", "company_website",
+    "company_email",      # generic shared inbox (contact@, info@) — NOT the person
     "company_phone", "company_phone_conf",
     "company_linkedin", "company_linkedin_conf",
     "company_instagram", "company_instagram_conf",
@@ -49,7 +50,7 @@ HEADERS = [
     "person_linkedin", "person_linkedin_conf",
     "person_instagram", "person_instagram_conf",
     "overall_score",
-    "is_new_lead",       # filled by run_campaign via lead_store
+    "is_new_lead",
     "dropped", "drop_reason",
 ]
 
@@ -67,6 +68,7 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         lead.company_address or "",
         lead.company_size or "",
         lead.company_website or "",
+        lead.company_email or "",
         *scored(lead.company_phone),
         *scored(lead.company_linkedin),
         *scored(lead.company_instagram),

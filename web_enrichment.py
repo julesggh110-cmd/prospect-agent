@@ -39,10 +39,32 @@ DEFAULT_TIMEOUT = 15.0
 EMAIL_RX = re.compile(
     r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"
 )
-# Generous FR/international phone pattern: +XX or 0X with 8-13 digits, optional spaces/dots/dashes
+# FR-first phone patterns. We are STRICT to avoid matching dates, SIREN numbers,
+# postal codes, year ranges, etc. Three accepted formats:
+# - 0X XX XX XX XX  (FR national, 10 digits starting with 0[1-9])
+# - +33 X XX XX XX XX  (FR international)
+# - +XX XXX...  (other intl, +CC then 7-14 more digits)
 PHONE_RX = re.compile(
-    r"(?:(?:\+|00)\d{1,3}[\s.\-]?)?(?:\(?\d{1,4}\)?[\s.\-]?){2,5}\d{2,4}"
+    r"(?:"
+    r"\b0[1-9](?:[\s.\-]?\d{2}){4}"                  # 0X XX XX XX XX
+    r"|\+33[\s.\-]?[1-9](?:[\s.\-]?\d{2}){4}"        # +33 X XX XX XX XX
+    r"|\+(?!33\b)\d{1,3}[\s.\-]?\d(?:[\s.\-]?\d{2,4}){2,5}"  # +CC ...
+    r")\b"
 )
+# Generic / shared inbox local-parts — these are NOT a person's email.
+GENERIC_LOCAL_PARTS = {
+    "contact", "info", "infos", "hello", "bonjour", "welcome",
+    "support", "help", "aide", "service-client", "serviceclient",
+    "sales", "ventes", "commercial", "commerce",
+    "marketing", "communication", "press", "presse", "media",
+    "admin", "administration", "secretariat", "secretaire",
+    "rh", "hr", "recrutement", "recruiting", "jobs", "carrieres",
+    "comptabilite", "compta", "facturation", "billing", "finance",
+    "direction", "office",
+    "noreply", "no-reply", "donotreply",
+    "webmaster", "postmaster", "abuse",
+    "reservations", "reservation", "booking", "rsvp",
+}
 # Hints for team / about pages (FR + EN)
 TEAM_HINTS = (
     "equipe", "équipe", "team", "about", "a-propos", "à-propos",
@@ -62,7 +84,9 @@ class WebEnrichment(BaseModel):
 
     root_url: str
     pages_fetched: list[str] = Field(default_factory=list)
-    emails: list[str] = Field(default_factory=list)
+    emails: list[str] = Field(default_factory=list)            # all (legacy)
+    emails_generic: list[str] = Field(default_factory=list)    # contact@, info@, ...
+    emails_personal: list[str] = Field(default_factory=list)   # prenom.nom@, ...
     phones: list[str] = Field(default_factory=list)
     linkedin_company: Optional[str] = None
     linkedin_profiles: list[str] = Field(default_factory=list)
@@ -87,13 +111,54 @@ class WebEnrichment(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _clean_phone(raw: str) -> Optional[str]:
-    """Normalize a phone-like string. Returns None if it looks too short to be real."""
+    """Normalize and validate a phone-like string. Returns None if it isn't really one.
+
+    Rejects dates (DDMMYYYY), SIRENs (9 digits), SIRETs (14 digits matching SIREN),
+    postal codes, year ranges. Accepts:
+    - FR national: 10 digits starting with 0[1-9]
+    - International with +: 8-15 digits after the +
+    """
     digits = re.sub(r"[^\d+]", "", raw)
-    # Drop strings that don't have 8-15 digits (excluding the +)
-    digit_count = len(re.sub(r"\D", "", digits))
-    if digit_count < 8 or digit_count > 15:
+    digits_only = re.sub(r"\D", "", digits)
+    n = len(digits_only)
+
+    # Outright bad lengths
+    if n < 8 or n > 15:
         return None
-    return digits
+
+    # Common false positives:
+    # - 8 digits looking like DDMMYYYY (01010000 .. 31129999)
+    if n == 8 and digits_only.isdigit():
+        try:
+            d = int(digits_only[:2])
+            m = int(digits_only[2:4])
+            y = int(digits_only[4:8])
+            if 1 <= d <= 31 and 1 <= m <= 12 and 1900 <= y <= 2099:
+                return None  # it's a date
+        except ValueError:
+            pass
+
+    # - 9 digits = exactly a SIREN
+    if n == 9 and digits == digits_only:
+        return None
+
+    # - 14 digits = SIRET
+    if n == 14 and digits == digits_only:
+        return None
+
+    # If FR national, must start with 0 and 2nd digit 1-9
+    if n == 10 and digits == digits_only:
+        if not (digits_only.startswith("0") and digits_only[1] in "123456789"):
+            return None
+
+    # Strip leading + and require a leading 0 or country code for everything else
+    if digits.startswith("+"):
+        return digits
+    if n == 10 and digits_only.startswith("0"):
+        return digits_only
+
+    # Anything else (e.g. 11-13 raw digits not starting with 0) — probably noise
+    return None
 
 
 def _dedupe(seq: list[str]) -> list[str]:
@@ -122,6 +187,17 @@ def _extract_from_html(html: str, base_url: str) -> dict:
         and "sentry.io" not in e.lower()
         and "@2x" not in e.lower()
     ]
+    # Separate generic ("contact@", "info@", ...) from personal-looking emails.
+    generic_emails: list[str] = []
+    personal_emails: list[str] = []
+    for e in emails:
+        local = e.split("@", 1)[0].lower()
+        # local-part normalized for matching (strip dots/dashes/underscores)
+        local_clean = re.sub(r"[._\-]", "", local)
+        if local in GENERIC_LOCAL_PARTS or local_clean in GENERIC_LOCAL_PARTS:
+            generic_emails.append(e)
+        else:
+            personal_emails.append(e)
 
     phones_raw = [m.group(0) for m in PHONE_RX.finditer(text)]
     phones = [p for p in (_clean_phone(p) for p in phones_raw) if p]
@@ -177,6 +253,8 @@ def _extract_from_html(html: str, base_url: str) -> dict:
 
     return {
         "emails": _dedupe(emails),
+        "emails_generic": _dedupe(generic_emails),
+        "emails_personal": _dedupe(personal_emails),
         "phones": _dedupe(phones),
         "linkedin_company": linkedin_company,
         "linkedin_profiles": _dedupe(linkedin_profiles),
@@ -208,6 +286,8 @@ def enrich_company_from_website(url: str, *, fetch_team_page: bool = True) -> We
             extracted = _extract_from_html(resp.text, home_url)
 
             enrichment.emails = extracted["emails"]
+            enrichment.emails_generic = extracted["emails_generic"]
+            enrichment.emails_personal = extracted["emails_personal"]
             enrichment.phones = extracted["phones"]
             enrichment.linkedin_company = extracted["linkedin_company"]
             enrichment.linkedin_profiles = extracted["linkedin_profiles"]
@@ -229,6 +309,12 @@ def enrich_company_from_website(url: str, *, fetch_team_page: bool = True) -> We
                     enrichment.team_page_text = team_extracted["text"][:20_000]
                     # merge new emails/phones/socials
                     enrichment.emails = _dedupe(enrichment.emails + team_extracted["emails"])
+                    enrichment.emails_generic = _dedupe(
+                        enrichment.emails_generic + team_extracted["emails_generic"]
+                    )
+                    enrichment.emails_personal = _dedupe(
+                        enrichment.emails_personal + team_extracted["emails_personal"]
+                    )
                     enrichment.phones = _dedupe(enrichment.phones + team_extracted["phones"])
                     enrichment.linkedin_profiles = _dedupe(
                         enrichment.linkedin_profiles + team_extracted["linkedin_profiles"]
