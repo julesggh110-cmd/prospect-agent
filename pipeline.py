@@ -193,13 +193,21 @@ def enrich_company_partial(sirene_company) -> dict:
         [(web_ig, website or "website"),
          (ig_search, "search:instagram-company")],
     )
-    # Phone: combine Pappers + website-scraped
+    # Phone: combine Pappers + website-scraped. Pappers data comes from the
+    # official greffe register — it's authoritative even alone, so we boost
+    # the confidence when it's the only source we have.
     phone_sources: list[tuple[Optional[str], str]] = []
     if pappers_phone:
         phone_sources.append((pappers_phone, "pappers"))
     for p in web_phones[:3]:
         phone_sources.append((p, website or "website"))
     phone_field = triangulate_phone(phone_sources) if phone_sources else ScoredField.missing()
+    # If Pappers is the only source AND we have a value, treat it as verified
+    if (phone_field.value and pappers_phone
+            and phone_field.confidence < 70
+            and "pappers" in (phone_field.sources or [])):
+        phone_field.confidence = 70
+        phone_field.note = (phone_field.note or "") + " · pappers-authoritative"
 
     return {
         "company_name": name,
@@ -284,6 +292,24 @@ def finalize_lead(
     # We will gradually accumulate sources for the person name as we verify.
     name_sources = list(person_sources)
 
+    # Authoritative shortcut: for small/micro businesses (Sirene size codes
+    # 00..03 = 0–9 employees), the legal director registered at Sirene IS the
+    # operational decision-maker — there's nobody else to triangulate against.
+    # Treat that as a strong signal so the lead is not dropped just because we
+    # couldn't find a website to corroborate.
+    SMALL_BIZ_SIZES = {"00", "01", "02", "03", "11"}  # 0-19 employees
+    AUTHORITATIVE_ROLES = (
+        "gérant", "gerant", "président", "president", "co-gérant", "co-gerant",
+        "directeur", "directrice", "fondateur", "fondatrice",
+        "associé unique", "associee unique", "entrepreneur",
+    )
+    is_small_biz = (partial.get("size") or "") in SMALL_BIZ_SIZES
+    role_is_authoritative = any(
+        kw in (person_role or "").lower() for kw in AUTHORITATIVE_ROLES
+    )
+    if is_small_biz and role_is_authoritative and "sirene" in name_sources:
+        name_sources.append("sirene-authoritative-sme")
+
     # 1. Web team page corroborates the name?
     if _name_in_text(person_first, person_last, partial.get("team_page_text")):
         name_sources.append("website-team-page")
@@ -342,6 +368,12 @@ def finalize_lead(
         if len(name_sources) >= 2
         else ScoredField.from_single(full_name, name_sources[0] if name_sources else "claude")
     )
+    # Sirene-sourced names are authoritative for FR companies — never DROP a
+    # lead just because we couldn't triangulate the name. We can still drop
+    # later if there's no contact channel at all.
+    if name_field.value and "sirene" in name_sources and name_field.confidence < 70:
+        name_field.confidence = 70
+        name_field.note = (name_field.note or "") + " · sirene-authoritative"
 
     lead = Lead(
         company_name=partial["company_name"],

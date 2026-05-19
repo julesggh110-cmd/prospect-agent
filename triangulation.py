@@ -119,9 +119,17 @@ class Lead(BaseModel):
         scores = [f.confidence for f in self.all_scored_fields.values() if f.value]
         self.overall_score = sum(scores) // len(scores) if scores else 0
 
-    def evaluate(self, *, min_person_conf: int = 60, min_contact_conf: int = 60) -> None:
-        """Mark the lead as dropped if it doesn't meet quality thresholds."""
+    def evaluate(self, *, min_person_conf: int = 60, min_contact_conf: int = 50) -> None:
+        """Mark the lead as dropped if it doesn't meet quality thresholds.
+
+        For small businesses (size 00..11, i.e., ≤19 employees), Sirene IS the
+        source of truth for the gérant identity and the company phone is the
+        contact channel — so we accept company_phone as a person-level channel
+        and we relax the contact threshold slightly.
+        """
         self.compute_overall()
+        SMB_SIZES = {"00", "01", "02", "03", "11", "12", ""}
+        is_smb = (self.company_size or "") in SMB_SIZES
         if self.person_name.confidence < min_person_conf:
             self.dropped = True
             self.drop_reason = (
@@ -129,11 +137,15 @@ class Lead(BaseModel):
                 f"< {min_person_conf} (no reliable decision-maker)"
             )
             return
-        best_contact = max(
+        # For SMBs, the company phone IS the way to reach the gérant.
+        candidates = [
             self.person_email.confidence,
             self.person_phone.confidence,
             self.person_linkedin.confidence,
-        )
+        ]
+        if is_smb:
+            candidates.append(self.company_phone.confidence)
+        best_contact = max(candidates)
         if best_contact < min_contact_conf:
             self.dropped = True
             self.drop_reason = (
