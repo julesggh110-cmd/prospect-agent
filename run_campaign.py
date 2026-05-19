@@ -82,6 +82,7 @@ def run(
     code_postal: str | None = None,
     departement: str | None = None,
     region: str | None = None,
+    tranche_effectif: str | None = None,
     volume: int = 10,
     persona_role_hint: str | None = None,
     output_stem: str | None = None,
@@ -119,6 +120,7 @@ def run(
             code_postal=code_postal,
             departement=departement,
             region=region,
+            tranche_effectif=tranche_effectif,
             per_page=min(volume, 25),
         )
     companies = resp.results[:volume]
@@ -260,6 +262,10 @@ def _cli() -> None:
     p.add_argument("--code-postal", help="Postal code (e.g., 69001)")
     p.add_argument("--departement", help="Département (e.g., 69)")
     p.add_argument("--region", help="Région code")
+    p.add_argument("--tranche-effectif", dest="tranche_effectif",
+                   help="Sirene size code: 00=0 emp, 01=1-2, 02=3-5, 03=6-9, "
+                        "11=10-19, 12=20-49, 21=50-99, 22=100-199, 31=200-249, "
+                        "32=250-499 (use 11 or 12 to target true SMBs and skip chains)")
     p.add_argument("--volume", type=int, default=10, help="Number of leads to target (default 10)")
     p.add_argument("--persona", dest="persona_role_hint",
                    help="Hint for the role label in the output (e.g., 'Gérant', 'DRH')")
@@ -297,6 +303,7 @@ def _cli() -> None:
         code_postal=args.code_postal,
         departement=args.departement,
         region=args.region,
+        tranche_effectif=args.tranche_effectif,
         volume=args.volume,
         persona_role_hint=args.persona_role_hint,
         output_stem=args.output_stem,
