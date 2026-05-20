@@ -61,13 +61,21 @@ See `DETAILS.md` for the full workflow, module reference, and examples.
 ## Environment
 
 Required at runtime: nothing — the agent works with zero keys (just slower).
-Strongly recommended (free tiers cover all testing):
+Strongly recommended (free tiers cover all testing, **no card required**):
+- `SERPER_API_KEY` → PRIMARY search backend (LinkedIn/Insta discovery). 2,500 free queries one-shot. Sign up: https://serper.dev
+- `DROPCONTACT_API_KEY` → personal email + phone enrichment (FR, GDPR). 50 free credits. Sign up: https://www.dropcontact.com/signup
 - `PAPPERS_API_KEY` → direct website/email/phone for FR companies (100/day free)
-- `BRAVE_SEARCH_API_KEY` → stable search backend (2k/month free)
+- `BRAVE_SEARCH_API_KEY` → legacy search backend (2k/month, may exhaust)
 - `HUBSPOT_ACCESS_TOKEN` → push leads straight into HubSpot CRM
 - `ANTHROPIC_API_KEY` → only needed for `--generate-emails` (cold email drafting). Your Claude Code MAX subscription does NOT cover this — it's a separate API key.
 
 Run `python setup_wizard.py --check` to confirm. If a key is missing, tell the user the URL to get one (in `setup_wizard.py`).
+
+## What v0.9.0 added (paid-layer ready)
+
+- **Serper.dev integration** (`serper_search.py`) — drop-in search backend, **2,500 free queries one-shot**. Becomes the primary backend because Google CSE is closed to new customers since 2025 and Brave's free quota is small.
+- **Dropcontact integration** (`dropcontact_client.py`) — French B2B contact enrichment via REST API. (firstname, lastname, company) → verified email + phone + sometimes LinkedIn. **50 free credits at signup, no card.** Wired as PRIORITY -1 in `finalize_lead`: when Dropcontact returns an email/phone/LinkedIn, it wins over all other sources (highest trust).
+- **Search backend fallback chain**: Serper → Google CSE → Brave → DDG. First non-empty result wins.
 
 ## What v0.8.0 added
 

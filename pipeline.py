@@ -29,6 +29,7 @@ from typing import Iterable, Optional
 
 from rich.console import Console
 
+from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
 from mentions_legales import extract_legal_contacts
 from name_utils import clean_person_name
@@ -475,6 +476,23 @@ def finalize_lead(
     # corroborating source (the personal pattern email also appearing scraped on
     # the website). Otherwise the user thinks they have Marie's email when in
     # reality it bounces.
+    # Dropcontact enrichment (highest-trust source — single API call returns
+    # email + phone + sometimes LinkedIn). Cached per (first, last, company)
+    # since results are stable. Cost: 1 credit on Dropcontact's plan.
+    dc_result = None
+    if have_dropcontact_key() and person_first and person_last:
+        @_cached("dropcontact", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
+        def _dc():
+            try:
+                return dropcontact_enrich(
+                    person_first, person_last,
+                    partial.get("company_name") or "",
+                    website=partial.get("website"),
+                )
+            except Exception:
+                return None
+        dc_result = _dc()
+
     # Pre-compute mentions-légales person matches so the email block below
     # can use them before we hit the slower mobile/SMTP/LinkedIn steps.
     mentions = partial.get("mentions_legales") or {}
@@ -495,10 +513,23 @@ def finalize_lead(
 
     email_field = ScoredField.missing()
 
+    # PRIORITY -1: Dropcontact returned a verified email.
+    # Highest trust — they actively probe SMTP and qualify as nominative vs pro.
+    if dc_result and dc_result.get("email"):
+        qual = dc_result.get("email_qualification") or ""
+        conf = 92 if qual.startswith("nominative") else 80
+        email_field = ScoredField(
+            value=dc_result["email"],
+            sources=["dropcontact"],
+            confidence=conf,
+            note=f"dropcontact:{qual}" if qual else "dropcontact",
+        )
+        name_sources.append(f"dropcontact-email:{dc_result['email']}")
+
     # PRIORITY 0: Mentions Légales explicitly named the director's email.
     # This is the strongest possible signal — legally published, attached
     # to the publisher of the site.
-    if person_email_supplement:
+    if not email_field.value and person_email_supplement:
         email_field = ScoredField(
             value=person_email_supplement,
             sources=["mentions-legales"],
@@ -549,10 +580,16 @@ def finalize_lead(
             # Otherwise (not_deliverable, no_mx, smtp_unreachable without corroboration)
             # we leave email_field as missing — better empty than wrong.
 
-    # 3a-bis. Mentions Légales phone — if the legal page mentions a director
-    # phone AND name matched (or no other director was named), use it.
+    # 3a-bis. Phone: Dropcontact > Mentions Légales > Mobile Finder > none.
     person_phone_field = ScoredField.missing()
-    if mentions.get("director_phone") and (director_is_target or not director_name_low):
+    if dc_result and dc_result.get("phone"):
+        person_phone_field = ScoredField(
+            value=dc_result["phone"],
+            sources=["dropcontact"],
+            confidence=88,
+            note="dropcontact",
+        )
+    if not person_phone_field.value and mentions.get("director_phone") and (director_is_target or not director_name_low):
         person_phone_field = ScoredField(
             value=mentions["director_phone"],
             sources=["mentions-legales"],
@@ -584,19 +621,29 @@ def finalize_lead(
         except Exception:
             pass
 
-    # 4. Person LinkedIn (filter: slug must contain first+last). The new
-    # social_finder takes city + role hints to bump query precision.
-    li_raw = find_linkedin_for_person(
-        full_name,
-        partial.get("company_name", ""),
-        city=partial.get("city"),
-        role=person_role or None,
-    )
-    if _name_in_linkedin_url(person_first, person_last, li_raw):
-        li_field = ScoredField.from_single(li_raw, "ddg:linkedin-in", verified=True)
-        name_sources.append(f"linkedin:{li_raw}")
-    else:
-        li_field = ScoredField.missing()
+    # 4. Person LinkedIn — Dropcontact > Serper search.
+    li_field = ScoredField.missing()
+    if dc_result and dc_result.get("linkedin"):
+        li_url = dc_result["linkedin"]
+        if _name_in_linkedin_url(person_first, person_last, li_url):
+            li_field = ScoredField(
+                value=li_url,
+                sources=["dropcontact"],
+                confidence=90,
+                note="dropcontact",
+            )
+            name_sources.append(f"dropcontact-linkedin:{li_url}")
+    if not li_field.value:
+        # Fall back to search (Serper > Brave > DDG). Strict slug validation.
+        li_raw = find_linkedin_for_person(
+            full_name,
+            partial.get("company_name", ""),
+            city=partial.get("city"),
+            role=person_role or None,
+        )
+        if _name_in_linkedin_url(person_first, person_last, li_raw):
+            li_field = ScoredField.from_single(li_raw, "search:linkedin-in", verified=True)
+            name_sources.append(f"linkedin:{li_raw}")
 
     # 5. Person Instagram (best-effort, weak signal)
     ig_raw = find_instagram_for_person(

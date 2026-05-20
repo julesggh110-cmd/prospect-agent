@@ -111,12 +111,14 @@ def have_brave_key() -> bool:
 
 
 def search_text(query: str, max_results: int = 10) -> list[dict]:
-    """Run a search. Backend priority: Google CSE > Brave > DDG.
+    """Run a search. Backend priority: Serper > Google CSE > Brave > DDG.
 
-    Why this order:
-      - Google CSE has the best index for LinkedIn / Insta discovery (the
-        prospect-agent's biggest win-case) and a 100/day free tier.
-      - Brave is solid for general web search, 2k/month free, but its monthly
+    Why this order (May 2026):
+      - Serper.dev gives REAL Google results: 2,500 free queries one-shot,
+        then $0.30/1k. Best LinkedIn / Insta discovery in 2026.
+      - Google CSE is CLOSED to new customers since 2025 — only useful for
+        users who already had a key. Kept as a fallback for those.
+      - Brave is solid for general web search, 2k/month free, but the monthly
         quota is easy to exhaust.
       - DDG is the last resort: no API key, but a weak index for social.
 
@@ -124,7 +126,17 @@ def search_text(query: str, max_results: int = 10) -> list[dict]:
     "no results" OR "quota exhausted"), we fall through to the next.
     Returns [] on any total failure, never raises.
     """
-    # 1. Google CSE (best for LinkedIn)
+    # 1. Serper.dev (best for LinkedIn; default in 2026)
+    try:
+        from serper_search import serper_search, have_serper_key
+        if have_serper_key():
+            results = serper_search(query, max_results=max_results)
+            if results:
+                return results
+    except Exception:
+        pass
+
+    # 2. Google CSE (only for legacy users with a key)
     try:
         from google_cse import google_cse_search, have_google_cse_key
         if have_google_cse_key():
@@ -134,7 +146,7 @@ def search_text(query: str, max_results: int = 10) -> list[dict]:
     except Exception:
         pass
 
-    # 2. Brave
+    # 3. Brave
     if have_brave_key():
         try:
             with BraveSearch() as b:
@@ -144,7 +156,7 @@ def search_text(query: str, max_results: int = 10) -> list[dict]:
         except Exception:
             pass
 
-    # 3. DDG fallback
+    # 4. DDG fallback
     try:
         from ddgs import DDGS  # type: ignore
     except ImportError:
