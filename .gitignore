@@ -27,6 +27,8 @@ data/*.csv
 data/*.json
 data/*.db
 data/cache/
+data/http_cache/
+data/quotas.db
 !data/.gitkeep
 output/
 benchmark/bench-*.md
