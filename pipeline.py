@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -493,6 +494,58 @@ def finalize_lead(
                 return None
         dc_result = _dc()
 
+    # CROSS-COMPANY DETECTION on Dropcontact result. Dropcontact returns the
+    # person's CURRENT email, which may be at a DIFFERENT employer than the
+    # SMB we just looked up in Sirene. Examples:
+    #   - Julien Zuccarelli is gérant of TABLAPIZZA per Sirene, but Dropcontact
+    #     returns zuccarelli.julien@tastycloud.fr (his SaaS employer)
+    #   - Hervé Sichel-Dulong is gérant of FLAVEURS per Sirene, but Dropcontact
+    #     returns herve@flaveursdurocher.com (a DIFFERENT 'Flaveurs' business)
+    # We KEEP the value (it's still a valid email for the person) but flag it
+    # so the salesperson knows their pitch needs to address this.
+    dc_cross_company = False
+    if dc_result and dc_result.get("email"):
+        import unicodedata as _ud
+        def _slug(s: str) -> str:
+            s = _ud.normalize("NFKD", s or "")
+            s = "".join(c for c in s if not _ud.combining(c)).lower()
+            return re.sub(r"[^a-z0-9]+", "", s)
+        email_domain = dc_result["email"].split("@", 1)[-1].lower()
+        email_host_slug = _slug(email_domain.split(".")[0])
+        company_slug = _slug(partial.get("company_name") or "")
+        website_host_slug = ""
+        if partial.get("website"):
+            from urllib.parse import urlparse as _urlparse
+            wh = (_urlparse(partial["website"]).hostname or "").lower()
+            wh = wh.removeprefix("www.")
+            website_host_slug = _slug(wh.split(".")[0])
+
+        # STRICT match: email host must EQUAL the company slug (or the verified
+        # website host slug), OR be within 3 characters of length. We do NOT
+        # accept "company_slug is a prefix of email_host_slug" because that's
+        # exactly the false-positive that lets "flaveursdurocher" pass for
+        # "flaveurs" (a different business sharing the brand prefix).
+        match = False
+        if email_host_slug and company_slug:
+            # Exact match (modulo articles already stripped)
+            if email_host_slug == company_slug:
+                match = True
+            # Within 3 chars (covers "lafaimdesharicots" ↔ "faimdesharicots"
+            # when article was stripped on one side)
+            elif abs(len(email_host_slug) - len(company_slug)) <= 3 and (
+                email_host_slug.startswith(company_slug) or
+                company_slug.startswith(email_host_slug) or
+                email_host_slug.endswith(company_slug) or
+                company_slug.endswith(email_host_slug)
+            ):
+                match = True
+            # Verified website host match — very strong signal since the
+            # website itself passed the strict FR / city-match filter.
+            elif website_host_slug and email_host_slug == website_host_slug:
+                match = True
+        if not match:
+            dc_cross_company = True
+
     # Pre-compute mentions-légales person matches so the email block below
     # can use them before we hit the slower mobile/SMTP/LinkedIn steps.
     mentions = partial.get("mentions_legales") or {}
@@ -515,15 +568,27 @@ def finalize_lead(
 
     # PRIORITY -1: Dropcontact returned a verified email.
     # Highest trust — they actively probe SMTP and qualify as nominative vs pro.
+    # Cross-company: if the email domain does NOT match the company we asked
+    # about, mark as 'cross-company' and lower confidence — the person uses
+    # this email but at a DIFFERENT employer, so the pitch will be off.
     if dc_result and dc_result.get("email"):
         qual = dc_result.get("email_qualification") or ""
-        conf = 92 if qual.startswith("nominative") else 80
-        email_field = ScoredField(
-            value=dc_result["email"],
-            sources=["dropcontact"],
-            confidence=conf,
-            note=f"dropcontact:{qual}" if qual else "dropcontact",
-        )
+        if dc_cross_company:
+            email_domain = dc_result["email"].split("@", 1)[-1]
+            email_field = ScoredField(
+                value=dc_result["email"],
+                sources=["dropcontact"],
+                confidence=40,  # valid email but WRONG company → low confidence
+                note=f"CROSS-COMPANY: email @{email_domain} ≠ {partial.get('company_name')}",
+            )
+        else:
+            conf = 92 if qual.startswith("nominative") else 80
+            email_field = ScoredField(
+                value=dc_result["email"],
+                sources=["dropcontact"],
+                confidence=conf,
+                note=f"dropcontact:{qual}" if qual else "dropcontact",
+            )
         name_sources.append(f"dropcontact-email:{dc_result['email']}")
 
     # PRIORITY 0: Mentions Légales explicitly named the director's email.
@@ -583,12 +648,21 @@ def finalize_lead(
     # 3a-bis. Phone: Dropcontact > Mentions Légales > Mobile Finder > none.
     person_phone_field = ScoredField.missing()
     if dc_result and dc_result.get("phone"):
-        person_phone_field = ScoredField(
-            value=dc_result["phone"],
-            sources=["dropcontact"],
-            confidence=88,
-            note="dropcontact",
-        )
+        if dc_cross_company:
+            # Likely the person's phone at their OTHER employer — flag clearly
+            person_phone_field = ScoredField(
+                value=dc_result["phone"],
+                sources=["dropcontact"],
+                confidence=45,
+                note=f"CROSS-COMPANY: phone at different employer than {partial.get('company_name')}",
+            )
+        else:
+            person_phone_field = ScoredField(
+                value=dc_result["phone"],
+                sources=["dropcontact"],
+                confidence=88,
+                note="dropcontact",
+            )
     if not person_phone_field.value and mentions.get("director_phone") and (director_is_target or not director_name_low):
         person_phone_field = ScoredField(
             value=mentions["director_phone"],

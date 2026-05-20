@@ -5,11 +5,14 @@ official website via DuckDuckGo search.
 Strategy:
 1. Build a query: "{company_name}" "{city}" site officiel
 2. Score every candidate: penalise aggregators, bonus for company-name match
-3. Return the best-scoring result (or None if no good candidate)
-4. Optionally validate via HEAD request
+3. FETCH the top candidate and VERIFY it's actually a FR business site
+   (mentions the city, has +33/0X phone, has SIRET/RCS, etc.)
+4. Return the best-scoring result that passes FR-validation (or None)
 
 This is the highest-leverage module for accuracy — picking the wrong website
-poisons the whole pipeline (wrong emails, wrong contact info).
+poisons the whole pipeline (wrong emails, wrong contact info). Without
+FR-validation, "L'Escargot Toulouse" was matching `lescargot.co.uk` (UK!)
+and "MOOD Toulouse" was matching `mood.com` (US).
 """
 from __future__ import annotations
 
@@ -20,6 +23,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
+from selectolax.parser import HTMLParser
 
 from brave_search import search_text  # auto-routes Brave→DDG with fallback
 
@@ -147,6 +151,106 @@ def _looks_alive(url: str) -> bool:
         return False
 
 
+# Regexes for FR-context detection on a candidate page.
+_FR_PHONE_RX = re.compile(r"(?:\+33[\s.\-]?\d|\b0\d)(?:[\s.\-]?\d{2}){4}\b")
+_US_PHONE_RX = re.compile(r"\+1[\s.\-]?\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}\b")
+_SIRET_RX = re.compile(r"\b\d{14}\b")
+_SIREN_RX = re.compile(r"\b\d{9}\b")
+_FR_LEGAL_RX = re.compile(
+    r"mentions[\s\-]l[ée]gales|siren|siret|r\.?c\.?s\.?|tva\s+intracommunautaire|"
+    r"num[ée]ro\s+t\.?v\.?a\.?",
+    re.IGNORECASE,
+)
+
+# Top-level domains that strongly suggest a foreign business.
+_FOREIGN_TLDS = (
+    ".co.uk", ".uk", ".us", ".ca", ".au", ".com.au", ".de", ".es", ".it",
+    ".nl", ".be", ".pt", ".ru", ".cn", ".jp", ".kr", ".in", ".br", ".mx",
+)
+
+
+def _is_fr_business_site(url: str, city: Optional[str] = None,
+                          *, must_match_city: bool = False) -> tuple[bool, str]:
+    """Fetch the URL and verify it looks like a French business site.
+
+    Returns (is_fr, reason) — the reason string is useful for logging.
+
+    A site is FR if at least ONE of:
+      - hostname ends in .fr
+      - page contains a FR phone (+33 or 0X XX XX XX XX)
+      - page contains SIRET / SIREN / RCS / TVA mention
+      - page contains the city name (if provided AND must_match_city=True)
+      - page has 'Mentions Légales' link
+
+    A site is REJECTED (returns False) if:
+      - hostname is in _FOREIGN_TLDS AND no FR phone / SIRET on page
+      - page contains a US phone format AND no FR phone
+      - if must_match_city: the city does NOT appear on the page
+    """
+    host = _host(url)
+
+    try:
+        with httpx.Client(timeout=_HTTP_TIMEOUT, headers=_HTTP_HEADERS,
+                          follow_redirects=True, verify=False) as c:
+            r = c.get(url)
+            if r.status_code >= 400:
+                return False, f"http {r.status_code}"
+            html = r.text or ""
+    except Exception as e:
+        return False, f"fetch_error {type(e).__name__}"
+
+    if len(html) < 300:
+        return False, "page too short"
+
+    # Strip diacritics + lowercase for matching
+    low = unicodedata.normalize("NFKD", html.lower())
+    low = "".join(c for c in low if not unicodedata.combining(c))
+
+    # --- POSITIVE FR signals ---
+    fr_signals: list[str] = []
+    if host.endswith(".fr"):
+        fr_signals.append("tld:.fr")
+    if _FR_PHONE_RX.search(html):
+        fr_signals.append("fr-phone")
+    if _FR_LEGAL_RX.search(html):
+        fr_signals.append("fr-legal")
+    if "mentions legales" in low or "mentions-legales" in low:
+        fr_signals.append("mentions-legales")
+    city_present = bool(city) and _slug(city) in _slug(html[:6000])
+    if city_present:
+        fr_signals.append(f"city:{city}")
+
+    # --- NEGATIVE / FOREIGN signals ---
+    foreign_signals: list[str] = []
+    if any(host.endswith(t) for t in _FOREIGN_TLDS):
+        foreign_signals.append(f"tld:{host}")
+    if _US_PHONE_RX.search(html) and not _FR_PHONE_RX.search(html):
+        foreign_signals.append("us-phone-only")
+    # Hard country mentions in the address area (footer / legal)
+    for marker in (
+        "united kingdom", "united states", "usa,", "u.s.a.",
+        ", canada", "australia", "deutschland", "españa",
+    ):
+        if marker in low:
+            foreign_signals.append(f"foreign:{marker.strip(', .')}")
+            break
+
+    # Decision:
+    # - must_match_city forces city presence
+    if must_match_city and not city_present:
+        return False, f"city {city!r} not on page; signals={fr_signals or 'none'}"
+    # - any foreign signal + no FR rebuttal = reject
+    if foreign_signals and not fr_signals:
+        return False, f"foreign signals {foreign_signals}, no FR rebuttal"
+    # - foreign TLD but FR phone present → accept (FR business with .com)
+    if fr_signals:
+        return True, f"fr signals: {fr_signals}"
+    # - no signal either way: be conservative — reject unless very common .com
+    if host.endswith(".com") and not foreign_signals:
+        return True, "neutral .com, no foreign signals"
+    return False, f"no FR signals (signals={fr_signals}, foreign={foreign_signals})"
+
+
 _WEBSITE_CACHE: dict[str, Optional[str]] = {}
 
 
@@ -164,11 +268,15 @@ def find_company_website(
     *,
     validate: bool = True,
     min_score: int = 25,
+    strict_fr: bool = True,
 ) -> Optional[str]:
     """Return the best guess of the company's official website URL, or None.
 
-    `min_score` (default 25) is the threshold below which we refuse to return
-    anything — we'd rather return None than push a wrong site downstream.
+    `min_score`: refuse to return anything below this URL-structure score.
+    `strict_fr`: when True (default), FETCH the candidate and verify it looks
+        like a French business site (TLD .fr, FR phone, city mention, SIRET, etc.).
+        This kills the "MOOD Toulouse → mood.com (US)" and
+        "L'Escargot Toulouse → lescargot.co.uk (UK)" false positives.
 
     Strategy: build several queries (with and without city / with "site officiel")
     and merge candidates. Caches the result per (name, city) for the process
@@ -176,7 +284,7 @@ def find_company_website(
     """
     if not name:
         return None
-    cache_key = f"{name}|{city or ''}|{min_score}|{int(validate)}"
+    cache_key = f"{name}|{city or ''}|{min_score}|{int(validate)}|{int(strict_fr)}"
     if cache_key in _WEBSITE_CACHE:
         return _WEBSITE_CACHE[cache_key]
 
@@ -207,6 +315,16 @@ def find_company_website(
             break
         if validate and not _looks_alive(url):
             continue
+        # STRICT FR validation: actually fetch the page and verify FR signals.
+        # When city is provided, REQUIRE the city name to appear on the page —
+        # this is the cheapest, most reliable way to reject foreign squatters
+        # that share the brand name (mood.com US, lescargot.co.uk UK, etc.).
+        if strict_fr:
+            is_fr, _reason = _is_fr_business_site(
+                url, city, must_match_city=bool(city),
+            )
+            if not is_fr:
+                continue
         parsed = urlparse(url)
         result = f"{parsed.scheme}://{parsed.hostname}"
         _WEBSITE_CACHE[cache_key] = result
