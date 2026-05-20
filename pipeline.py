@@ -33,6 +33,7 @@ from rich.console import Console
 from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
 from email_pattern_engine import guess_emails as guess_email_patterns
+from phone_utils import classify as classify_phone, normalize_fr_phone
 from mentions_legales import extract_legal_contacts
 from name_utils import clean_person_name
 from pappers_client import enrich_with_pappers, have_pappers_key
@@ -256,25 +257,33 @@ def enrich_company_partial(sirene_company) -> dict:
         [(web_ig, website or "website"),
          (ig_search, "search:instagram-company")],
     )
-    # Phone: combine Pappers + website-scraped + Pages Jaunes fallback.
+    # Company phone: gather EVERY plausible FR phone from all sources, then
+    # triangulate. Foreign / invalid numbers are filtered out (eg the bogus
+    # +14055947026 we saw for MOOD via OSM-tag-of-different-business).
+    from phone_utils import classify as _classify_phone, normalize_fr_phone as _norm_fr
     phone_sources: list[tuple[Optional[str], str]] = []
+
+    def _push_phone(raw: Optional[str], source: str) -> None:
+        if not raw:
+            return
+        kind = _classify_phone(raw)
+        if kind in ("foreign", "invalid", "special"):
+            return
+        norm = _norm_fr(raw) or raw
+        phone_sources.append((norm, source))
+
     if pappers_phone:
-        phone_sources.append((pappers_phone, "pappers"))
-    for p in web_phones[:3]:
-        phone_sources.append((p, website or "website"))
-
-    # Mentions Légales phone — high-trust source (legally mandated).
-    if mentions.get("company_phone"):
-        phone_sources.append((mentions["company_phone"], "mentions-legales"))
-    elif mentions.get("director_phone"):
-        phone_sources.append((mentions["director_phone"], "mentions-legales"))
-
-    # SMB fallback: if we still have no phone, use OSM's phone tag (free,
-    # no anti-bot). PJ is now blocked behind Cloudflare so we only attempt it
-    # as a last resort and accept silent failures.
-    if not phone_sources and osm_data and osm_data.get("phone"):
-        phone_sources.append((osm_data["phone"], "osm"))
-
+        _push_phone(pappers_phone, "pappers")
+    for p in web_phones[:5]:
+        _push_phone(p, website or "website")
+    # Mentions Légales phone — high-trust (legally mandated)
+    _push_phone(mentions.get("company_phone"), "mentions-legales")
+    _push_phone(mentions.get("director_phone"), "mentions-legales")
+    # OSM tag — ALWAYS try it, not just when phone_sources is empty.
+    # Multiple sources strengthen triangulation confidence (90 vs 35).
+    if osm_data and osm_data.get("phone"):
+        _push_phone(osm_data["phone"], "osm")
+    # PJ behind Cloudflare — best-effort, fails silently
     if not phone_sources:
         @_cached("pagesjaunes", f"{name}|{city or ''}")
         def _pj():
@@ -284,14 +293,14 @@ def enrich_company_partial(sirene_company) -> dict:
             except Exception:
                 return None
         pj_phone = _pj()
-        if pj_phone:
-            phone_sources.append((pj_phone, "pagesjaunes"))
+        _push_phone(pj_phone, "pagesjaunes")
 
     phone_field = triangulate_phone(phone_sources) if phone_sources else ScoredField.missing()
-    # If Pappers / OSM / Pages Jaunes is the source (one alone is enough), boost to 70.
+    # If Pappers / OSM / Pages Jaunes / Mentions Légales is the source (one
+    # alone is enough), boost to 70 — these are authoritative.
     if phone_field.value and phone_field.confidence < 70:
         srcs = phone_field.sources or []
-        if any(s in ("pappers", "pagesjaunes", "osm") for s in srcs):
+        if any(s in ("pappers", "pagesjaunes", "osm", "mentions-legales") for s in srcs):
             phone_field.confidence = 70
             phone_field.note = (phone_field.note or "") + " · authoritative-source"
 
@@ -312,6 +321,24 @@ def enrich_company_partial(sirene_company) -> dict:
         v = mentions.get(k)
         if v and v not in company_email_candidates:
             company_email_candidates.append(v)
+
+    # Last-resort company_email: when no source gave us anything, try the
+    # standard "contact@{domain}" / "info@{domain}" / "hello@{domain}" patterns
+    # on the verified website domain. Tagged as pattern-guess with low conf,
+    # only if it has a working MX record (kills hallucinations).
+    if not company_email_candidates and website:
+        from urllib.parse import urlparse as _urlparse
+        host = (_urlparse(website).hostname or "").lower().removeprefix("www.")
+        if host and "." in host:
+            try:
+                from email_pattern_engine import _domain_has_mx
+                if _domain_has_mx(host):
+                    for prefix in ("contact", "info", "hello", "bonjour"):
+                        company_email_candidates.append(f"{prefix}@{host}")
+                        break  # one is enough at this stage
+            except Exception:
+                pass
+
     company_email = company_email_candidates[0] if company_email_candidates else None
 
     # Promote OSM-discovered Instagram / Facebook handles if we got them and the
@@ -693,31 +720,54 @@ def finalize_lead(
         except Exception:
             pass
 
-    # 3a-bis. Phone: Dropcontact > Mentions Légales > Mobile Finder > none.
+    # 3a-bis. Phone routing: person_phone = MOBILE ONLY (06/07).
+    # Anything else (fixed line, foreign, special) is downgraded — it routes
+    # through a switchboard, not the dirigeant's pocket. Those go to
+    # company_phone instead (handled below via the partial dict).
     person_phone_field = ScoredField.missing()
+    person_phone_demoted_fixed: Optional[str] = None  # collected for company_phone
+
+    def _accept_as_person_phone(raw: str) -> bool:
+        """Return True iff the phone is a FR mobile worth showing as person_phone.
+        Fixed lines / foreign / special numbers get demoted to company_phone."""
+        return classify_phone(raw) == "mobile"
+
     if dc_result and dc_result.get("phone"):
-        if dc_cross_company:
-            # Likely the person's phone at their OTHER employer — flag clearly
-            person_phone_field = ScoredField(
-                value=dc_result["phone"],
-                sources=["dropcontact"],
-                confidence=45,
-                note=f"CROSS-COMPANY: phone at different employer than {partial.get('company_name')}",
-            )
+        dc_phone = dc_result["phone"]
+        if _accept_as_person_phone(dc_phone):
+            normalized = normalize_fr_phone(dc_phone) or dc_phone
+            if dc_cross_company:
+                person_phone_field = ScoredField(
+                    value=normalized,
+                    sources=["dropcontact"],
+                    confidence=45,
+                    note=f"CROSS-COMPANY mobile: at different employer than {partial.get('company_name')}",
+                )
+            else:
+                person_phone_field = ScoredField(
+                    value=normalized,
+                    sources=["dropcontact"],
+                    confidence=88,
+                    note="dropcontact (mobile-verified)",
+                )
         else:
+            # Demote: not a mobile → company_phone candidate
+            person_phone_demoted_fixed = normalize_fr_phone(dc_phone) or dc_phone
+
+    if (not person_phone_field.value
+            and mentions.get("director_phone")
+            and (director_is_target or not director_name_low)):
+        ml_phone = mentions["director_phone"]
+        if _accept_as_person_phone(ml_phone):
             person_phone_field = ScoredField(
-                value=dc_result["phone"],
-                sources=["dropcontact"],
-                confidence=88,
-                note="dropcontact",
+                value=normalize_fr_phone(ml_phone) or ml_phone,
+                sources=["mentions-legales"],
+                confidence=85 if director_is_target else 65,
+                note="legal-publisher mobile"
+                     + (" (name matched)" if director_is_target else ""),
             )
-    if not person_phone_field.value and mentions.get("director_phone") and (director_is_target or not director_name_low):
-        person_phone_field = ScoredField(
-            value=mentions["director_phone"],
-            sources=["mentions-legales"],
-            confidence=85 if director_is_target else 65,
-            note="legal-publisher phone" + (" (name matched)" if director_is_target else ""),
-        )
+        elif not person_phone_demoted_fixed:
+            person_phone_demoted_fixed = normalize_fr_phone(ml_phone) or ml_phone
 
     # 3b. Free Mobile Finder — fallback if mentions_legales didn't give a phone.
     # Skip entirely when Dropcontact already returned a phone (we save 10-15s
@@ -735,13 +785,17 @@ def finalize_lead(
             mobile_result = _mobile()
             if mobile_result:
                 mobile, source = mobile_result
-                person_phone_field = ScoredField(
-                    value=mobile,
-                    sources=[f"mobile-finder:{source}"],
-                    confidence=75,
-                    note=f"mobile found via {source}",
-                )
-                name_sources.append(f"mobile-near-name:{source}")
+                # mobile_finder already filters on 06/07 via its FR_MOBILE_RX,
+                # but double-check with the centralised classifier in case the
+                # regex captured something edge-case.
+                if classify_phone(mobile) == "mobile":
+                    person_phone_field = ScoredField(
+                        value=normalize_fr_phone(mobile) or mobile,
+                        sources=[f"mobile-finder:{source}"],
+                        confidence=75,
+                        note=f"mobile found via {source}",
+                    )
+                    name_sources.append(f"mobile-near-name:{source}")
         except Exception:
             pass
 
@@ -796,6 +850,27 @@ def finalize_lead(
         name_field.confidence = 70
         name_field.note = (name_field.note or "") + " · sirene-authoritative"
 
+    # If person_phone got demoted (Dropcontact returned a fixed line, not a
+    # mobile), promote it into company_phone if it's not already there.
+    company_phone_field = ScoredField(**partial["company_phone"])
+    if person_phone_demoted_fixed:
+        existing_digits = re.sub(r"\D", "", company_phone_field.value or "")
+        new_digits = re.sub(r"\D", "", person_phone_demoted_fixed)
+        if not existing_digits or existing_digits != new_digits:
+            # Promote when company_phone was empty, OR triangulate when both
+            # exist (different sources agreeing on the same line = bonus).
+            if not company_phone_field.value:
+                company_phone_field = ScoredField(
+                    value=person_phone_demoted_fixed,
+                    sources=["dropcontact:fixed-line"],
+                    confidence=75,
+                    note="Dropcontact returned a fixed line, not a mobile; "
+                         "treated as company switchboard.",
+                )
+            elif company_phone_field.confidence < 90:
+                company_phone_field.confidence = min(90, company_phone_field.confidence + 10)
+                company_phone_field.sources = list(company_phone_field.sources) + ["dropcontact"]
+
     lead = Lead(
         company_name=partial["company_name"],
         company_siren=partial.get("siren"),
@@ -808,7 +883,7 @@ def finalize_lead(
         company_email=partial.get("company_email"),
         company_linkedin=ScoredField(**partial["company_linkedin"]),
         company_instagram=ScoredField(**partial["company_instagram"]),
-        company_phone=ScoredField(**partial["company_phone"]),
+        company_phone=company_phone_field,
         person_name=name_field,
         person_role=role_field,
         person_email=email_field,

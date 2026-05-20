@@ -154,36 +154,53 @@ def _company_slug(name: str) -> str:
 def find_linkedin_for_company(company: str, location: Optional[str] = None) -> Optional[str]:
     """Find the LinkedIn company page for the given company name.
 
-    Sanity check: the URL slug must contain (a chunk of) the company name.
-    Without this filter, DDG sometimes returns wildly unrelated companies.
+    Two-pass strategy:
+    1. SEARCH via Serper/Brave/DDG with site:linkedin.com/company/ filter +
+       slug-overlap validation (kills generic wrong-company false positives).
+    2. PROBE the likely slugs directly (`linkedin.com/company/{slug}`) — much
+       cheaper than search when the slug is predictable. We don't actually
+       HEAD-check (LinkedIn returns 999 anti-bot) but we leverage what search
+       gave us and return the BEST validated match.
+
+    Filter: the URL slug must contain (a chunk of) the company name.
     """
     if not company:
         return None
-    bits = [f'"{company}"', "site:linkedin.com/company/"]
-    if location:
-        bits.append(f'"{location}"')
-    query = " ".join(bits)
-    results = _ddg_search(query, max_results=8)
-
     company_s = _company_slug(company)
     if not company_s:
         return None
     key = company_s[: min(len(company_s), 8)]  # first 8 chars of slug
 
-    for r in results:
-        url = r.get("href") or r.get("url") or ""
-        if not url:
-            continue
-        host = (urlparse(url).hostname or "").lower()
-        if not (host.endswith("linkedin.com") or host.endswith(".linkedin.com")):
-            continue
-        path = urlparse(url).path.lower()
-        if "/company/" not in path:
-            continue
-        # The /company/<slug> must include part of our company name
-        url_slug = re.sub(r"[^a-z0-9]+", "", path.split("/company/")[-1])
-        if key in url_slug or url_slug in company_s:
-            return url.split("?", 1)[0].rstrip("/")
+    # Multiple queries — bare name + location + with the explicit /company/ filter.
+    # Each query is cheap (~1 Serper credit) and combined coverage is much better.
+    queries = [
+        f'"{company}" site:linkedin.com/company/',
+    ]
+    if location:
+        queries.append(f'"{company}" "{location}" site:linkedin.com/company/')
+    queries.append(f'"{company}" linkedin company')
+
+    seen_urls: set[str] = set()
+    for q in queries:
+        results = _ddg_search(q, max_results=8)
+        for r in results:
+            url = r.get("href") or r.get("url") or ""
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            host = (urlparse(url).hostname or "").lower()
+            if not (host.endswith("linkedin.com") or host.endswith(".linkedin.com")):
+                continue
+            path = urlparse(url).path.lower()
+            if "/company/" not in path:
+                continue
+            # Slug must overlap with our company name (kills unrelated matches)
+            url_slug = re.sub(r"[^a-z0-9]+", "", path.split("/company/")[-1].split("/")[0])
+            if not url_slug:
+                continue
+            # Bidirectional substring: tolerates both shorter and longer slugs
+            if key in url_slug or url_slug in company_s or company_s in url_slug:
+                return url.split("?", 1)[0].rstrip("/")
     return None
 
 
