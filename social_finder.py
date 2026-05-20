@@ -76,11 +76,18 @@ def find_linkedin_for_person(
     if not name or not company:
         return None
 
-    # Normalize for slug matching at the end
-    name_tokens = [t for t in re.split(r"\s+", name) if t]
-    name_slug_check = "".join(
-        c for c in re.sub(r"[^a-zA-Z]+", "", name.lower())
-    )
+    # Normalize for slug matching at the end. CRITICAL: we strip accents
+    # because LinkedIn slugs strip them too ("Hervé Sichel-Dulong" →
+    # "herve-sichel-dulong-XXXXX"), and we previously matched against the
+    # accented form, causing every accented French name to be rejected.
+    import unicodedata
+    def _strip_accents(s: str) -> str:
+        return "".join(c for c in unicodedata.normalize("NFKD", s)
+                       if not unicodedata.combining(c))
+
+    name_ascii = _strip_accents(name)
+    name_tokens = [t for t in re.split(r"\s+", name_ascii) if t]
+    name_slug_check = re.sub(r"[^a-z]+", "", name_ascii.lower())
 
     # Generate query variants — most specific first
     bits_base = f'"{name}" "{company}"'
@@ -107,17 +114,31 @@ def find_linkedin_for_person(
             path = urlparse(url).path.lower()
             if "/in/" not in path:
                 continue
-            # Sanity: the slug must contain part of the person's name
-            slug = re.sub(r"[^a-z]+", "", path.split("/in/")[-1].split("/")[0])
+            # Sanity: the slug must contain the person's name.
+            # Strip accents from the slug FIRST (URL-decoded LinkedIn slugs
+            # like "hervé-sichel-dulong" should compare against "herve...").
+            raw_slug = path.split("/in/")[-1].split("/")[0]
+            slug_ascii = _strip_accents(raw_slug)
+            slug = re.sub(r"[^a-z]+", "", slug_ascii.lower())
             if not name_slug_check:
                 return url.split("?", 1)[0].rstrip("/")
-            # Match if any name token (>= 4 chars) appears in slug,
-            # OR the slug appears in the concatenated name
-            matched = (
-                any(t.lower() in slug for t in name_tokens if len(t) >= 4)
-                or slug in name_slug_check
-            )
-            if matched:
+
+            # Distinguishing tokens — only keep ones that are long enough to
+            # rule out common-name false-positives (e.g. "alain-navarre"
+            # matching "Alain Audiau" because "alain" alone is in the slug).
+            distinguishing = [t.lower() for t in name_tokens if len(t) >= 4]
+            if not distinguishing:
+                # Name was too short/non-distinguishing — skip
+                continue
+
+            # STRICT match: require ALL distinguishing tokens to appear in slug.
+            # This kills "alain-navarre" matching "Alain Audiau" because "audiau"
+            # is missing. For multi-word last names like "Sichel-Dulong", we also
+            # accept matching the joined form ("sicheldulong").
+            all_present = all(t in slug for t in distinguishing)
+            joined_present = name_slug_check in slug or slug in name_slug_check
+
+            if all_present or joined_present:
                 return url.split("?", 1)[0].rstrip("/")
     return None
 

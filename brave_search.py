@@ -111,18 +111,40 @@ def have_brave_key() -> bool:
 
 
 def search_text(query: str, max_results: int = 10) -> list[dict]:
-    """Run a search via Brave if BRAVE_SEARCH_API_KEY is set, else DDG.
+    """Run a search. Backend priority: Google CSE > Brave > DDG.
 
-    Same return shape as DDGS.text(). Returns an empty list on any error,
-    never raises.
+    Why this order:
+      - Google CSE has the best index for LinkedIn / Insta discovery (the
+        prospect-agent's biggest win-case) and a 100/day free tier.
+      - Brave is solid for general web search, 2k/month free, but its monthly
+        quota is easy to exhaust.
+      - DDG is the last resort: no API key, but a weak index for social.
+
+    Each backend is tried in order; if a backend returns empty (could be
+    "no results" OR "quota exhausted"), we fall through to the next.
+    Returns [] on any total failure, never raises.
     """
+    # 1. Google CSE (best for LinkedIn)
+    try:
+        from google_cse import google_cse_search, have_google_cse_key
+        if have_google_cse_key():
+            results = google_cse_search(query, max_results=max_results)
+            if results:
+                return results
+    except Exception:
+        pass
+
+    # 2. Brave
     if have_brave_key():
         try:
             with BraveSearch() as b:
-                return b.text(query, max_results=max_results)
+                results = b.text(query, max_results=max_results)
+                if results:
+                    return results
         except Exception:
-            pass  # fall through to DDG
-    # Fallback: DDG
+            pass
+
+    # 3. DDG fallback
     try:
         from ddgs import DDGS  # type: ignore
     except ImportError:

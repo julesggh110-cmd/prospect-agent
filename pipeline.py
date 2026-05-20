@@ -30,6 +30,7 @@ from typing import Iterable, Optional
 from rich.console import Console
 
 from email_finder import find_best_email
+from mentions_legales import extract_legal_contacts
 from name_utils import clean_person_name
 from pappers_client import enrich_with_pappers, have_pappers_key
 from social_finder import (
@@ -208,6 +209,19 @@ def enrich_company_partial(sirene_company) -> dict:
         return we.model_dump() if we else None
     web_dict = _scrape()
 
+    # 3-bis. Mentions Légales — French law mandates publication of dirigeant
+    # contact info on every commercial website. Highest-ROI free source for
+    # personal email/phone of FR SMB owners.
+    @_cached("mentions_legales", website or "no_site")
+    def _mentions():
+        if not website:
+            return None
+        try:
+            return extract_legal_contacts(website)
+        except Exception:
+            return None
+    mentions = _mentions() or {}
+
     # Pull the bits we need out of the scraped dict (lazy DDG: skip search if already known)
     web_li = (web_dict or {}).get("linkedin_company")
     web_ig = (web_dict or {}).get("instagram_account")
@@ -245,6 +259,12 @@ def enrich_company_partial(sirene_company) -> dict:
         phone_sources.append((pappers_phone, "pappers"))
     for p in web_phones[:3]:
         phone_sources.append((p, website or "website"))
+
+    # Mentions Légales phone — high-trust source (legally mandated).
+    if mentions.get("company_phone"):
+        phone_sources.append((mentions["company_phone"], "mentions-legales"))
+    elif mentions.get("director_phone"):
+        phone_sources.append((mentions["director_phone"], "mentions-legales"))
 
     # SMB fallback: if we still have no phone, use OSM's phone tag (free,
     # no anti-bot). PJ is now blocked behind Cloudflare so we only attempt it
@@ -284,6 +304,11 @@ def enrich_company_partial(sirene_company) -> dict:
             company_email_candidates.append(e)
     if osm_data and osm_data.get("email") and osm_data["email"] not in company_email_candidates:
         company_email_candidates.append(osm_data["email"])
+    # Mentions Légales: director_email + company_email from legal page
+    for k in ("director_email", "company_email"):
+        v = mentions.get(k)
+        if v and v not in company_email_candidates:
+            company_email_candidates.append(v)
     company_email = company_email_candidates[0] if company_email_candidates else None
 
     # Promote OSM-discovered Instagram / Facebook handles if we got them and the
@@ -319,6 +344,8 @@ def enrich_company_partial(sirene_company) -> dict:
         "company_linkedin": li_field.model_dump(),
         "company_instagram": ig_field.model_dump(),
         "company_phone": phone_field.model_dump(),
+        # Mentions légales — used by finalize_lead for person-level enrichment
+        "mentions_legales": mentions,
     }
 
 
@@ -351,13 +378,32 @@ def _name_in_text(first: str, last: str, text: Optional[str]) -> bool:
 
 
 def _name_in_linkedin_url(first: str, last: str, url: Optional[str]) -> bool:
-    """LinkedIn /in/<slug> slugs usually contain firstlast or first-last."""
+    """LinkedIn /in/<slug> slugs usually contain firstlast or first-last.
+
+    CRITICAL: we strip accents before comparing — French names like 'Hervé'
+    become 'herve' in the slug, and the previous code was failing on every
+    accented gérant name.
+    """
     if not url or not first or not last:
         return False
     import re as _re
-    slug = url.rstrip("/").rsplit("/", 1)[-1].lower()
-    slug = _re.sub(r"[^a-z]+", "", slug)
-    return (first.lower() in slug) and (last.lower() in slug)
+    import unicodedata as _ud
+    def _strip(s: str) -> str:
+        s = _ud.normalize("NFKD", s)
+        return "".join(c for c in s if not _ud.combining(c)).lower()
+    slug_raw = url.rstrip("/").rsplit("/", 1)[-1]
+    slug = _re.sub(r"[^a-z]+", "", _strip(slug_raw))
+    first_s = _re.sub(r"[^a-z]+", "", _strip(first))
+    last_s = _re.sub(r"[^a-z]+", "", _strip(last))
+    # Accept if BOTH first and last appear in slug, OR if just last (long
+    # enough to be distinctive) appears — some slugs use only the last name
+    # plus a numeric suffix.
+    if first_s and last_s:
+        if first_s in slug and last_s in slug:
+            return True
+    if len(last_s) >= 6 and last_s in slug:
+        return True
+    return False
 
 
 def finalize_lead(
@@ -429,8 +475,39 @@ def finalize_lead(
     # corroborating source (the personal pattern email also appearing scraped on
     # the website). Otherwise the user thinks they have Marie's email when in
     # reality it bounces.
+    # Pre-compute mentions-légales person matches so the email block below
+    # can use them before we hit the slower mobile/SMTP/LinkedIn steps.
+    mentions = partial.get("mentions_legales") or {}
+    director_name_low = (mentions.get("director_name") or "").lower()
+    director_is_target = bool(
+        director_name_low
+        and person_first.lower() in director_name_low
+        and person_last.lower() in director_name_low
+    )
+    if director_is_target:
+        name_sources.append("mentions-legales:director-name")
+    person_email_supplement = (
+        mentions.get("director_email")
+        if (mentions.get("director_email")
+            and (director_is_target or not director_name_low))
+        else None
+    )
+
     email_field = ScoredField.missing()
-    if domain and person_first and person_last:
+
+    # PRIORITY 0: Mentions Légales explicitly named the director's email.
+    # This is the strongest possible signal — legally published, attached
+    # to the publisher of the site.
+    if person_email_supplement:
+        email_field = ScoredField(
+            value=person_email_supplement,
+            sources=["mentions-legales"],
+            confidence=90 if director_is_target else 70,
+            note="legal-publisher email" + (" (name matched)" if director_is_target else ""),
+        )
+        name_sources.append(f"mentions-email:{person_email_supplement}")
+
+    if not email_field.value and domain and person_first and person_last:
         best, _ = find_best_email(person_first, person_last, domain)
         if best and best.email:
             # Does the pattern email appear on the company website? If yes,
@@ -472,31 +549,40 @@ def finalize_lead(
             # Otherwise (not_deliverable, no_mx, smtp_unreachable without corroboration)
             # we leave email_field as missing — better empty than wrong.
 
-    # 3b. Free Mobile Finder — try to find a personal mobile (06/07)
-    # near the person's name in press pages, Calendly, articles, blogs.
-    # Best-effort: ~15-25% hit rate (vs 70% with paid Kaspr). Always free.
+    # 3a-bis. Mentions Légales phone — if the legal page mentions a director
+    # phone AND name matched (or no other director was named), use it.
     person_phone_field = ScoredField.missing()
-    try:
-        from mobile_finder import find_mobile_for_person
-        @_cached("mobile", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
-        def _mobile():
-            return find_mobile_for_person(
-                person_first, person_last,
-                partial.get("company_name") or "",
-                website=partial.get("website"),
-            )
-        mobile_result = _mobile()
-        if mobile_result:
-            mobile, source = mobile_result
-            person_phone_field = ScoredField(
-                value=mobile,
-                sources=[f"mobile-finder:{source}"],
-                confidence=75,
-                note=f"mobile found via {source}",
-            )
-            name_sources.append(f"mobile-near-name:{source}")
-    except Exception:
-        pass
+    if mentions.get("director_phone") and (director_is_target or not director_name_low):
+        person_phone_field = ScoredField(
+            value=mentions["director_phone"],
+            sources=["mentions-legales"],
+            confidence=85 if director_is_target else 65,
+            note="legal-publisher phone" + (" (name matched)" if director_is_target else ""),
+        )
+
+    # 3b. Free Mobile Finder — fallback if mentions_legales didn't give a phone.
+    if not person_phone_field.value:
+        try:
+            from mobile_finder import find_mobile_for_person
+            @_cached("mobile", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
+            def _mobile():
+                return find_mobile_for_person(
+                    person_first, person_last,
+                    partial.get("company_name") or "",
+                    website=partial.get("website"),
+                )
+            mobile_result = _mobile()
+            if mobile_result:
+                mobile, source = mobile_result
+                person_phone_field = ScoredField(
+                    value=mobile,
+                    sources=[f"mobile-finder:{source}"],
+                    confidence=75,
+                    note=f"mobile found via {source}",
+                )
+                name_sources.append(f"mobile-near-name:{source}")
+        except Exception:
+            pass
 
     # 4. Person LinkedIn (filter: slug must contain first+last). The new
     # social_finder takes city + role hints to bump query precision.
