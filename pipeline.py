@@ -280,49 +280,59 @@ def enrich_company_partial(sirene_company) -> dict:
         if guess:
             website = guess
 
-    # 3. Scrape the website (cached per URL).
+    # 3+4. Run web_enrichment, mentions_legales, LinkedIn co, Insta co IN
+    # PARALLEL. These were previously sequential; the search calls don't
+    # depend on the scrape results. Cuts another ~3-5s/lead on wall-time.
     @_cached("web_enrichment", website or "no_site")
     def _scrape():
         if not website:
             return None
         we = enrich_company_from_website(website, fetch_team_page=True)
         return we.model_dump() if we else None
-    web_dict = _scrape()
 
-    # 3-bis. Mentions Légales — French law mandates publication of dirigeant
-    # contact info on every commercial website. Highest-ROI free source for
-    # personal email/phone of FR SMB owners.
     @_cached("mentions_legales", website or "no_site")
-    def _mentions():
+    def _mentions_fn():
         if not website:
             return None
         try:
             return extract_legal_contacts(website)
         except Exception:
             return None
-    mentions = _mentions() or {}
 
-    # Pull the bits we need out of the scraped dict (lazy DDG: skip search if already known)
+    @_cached("li_co", f"{name}|{city or ''}")
+    def _li_search_fn():
+        return find_linkedin_for_company(name, city)
+
+    @_cached("ig_co", f"{name}|{city or ''}")
+    def _ig_search_fn():
+        return find_instagram_for_company(name, city)
+
+    web_dict: Optional[dict] = None
+    mentions: dict = {}
+    li_search: Optional[str] = None
+    ig_search: Optional[str] = None
+    with _PartialTPE(max_workers=4) as exe:
+        futs = {
+            "web":      exe.submit(_scrape),
+            "mentions": exe.submit(_mentions_fn),
+            "li_co":    exe.submit(_li_search_fn),
+            "ig_co":    exe.submit(_ig_search_fn),
+        }
+        web_dict = futs["web"].result()
+        mentions = futs["mentions"].result() or {}
+        li_search = futs["li_co"].result()
+        ig_search = futs["ig_co"].result()
+
+    # Pull the bits we need out of the scraped dict
     web_li = (web_dict or {}).get("linkedin_company")
     web_ig = (web_dict or {}).get("instagram_account")
     web_phones = (web_dict or {}).get("phones") or []
 
-    # 4. Search company LinkedIn ONLY if website didn't give it (lazy DDG).
+    # Search results take priority only if the website didn't yield them
     if web_li:
         li_search = None
-    else:
-        @_cached("li_co", f"{name}|{city or ''}")
-        def _li_search():
-            return find_linkedin_for_company(name, city)
-        li_search = _li_search()
-
     if web_ig:
         ig_search = None
-    else:
-        @_cached("ig_co", f"{name}|{city or ''}")
-        def _ig_search():
-            return find_instagram_for_company(name, city)
-        ig_search = _ig_search()
 
     # 5. Triangulate company-level fields
     li_field = triangulate_url(

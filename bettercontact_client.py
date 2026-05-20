@@ -38,8 +38,11 @@ from http_safe import Throttle
 API_BASE = "https://app.bettercontact.rocks/api/v2"
 DEFAULT_TIMEOUT = 30.0
 _THROTTLE = Throttle(min_interval_s=0.5)
-_POLL_INTERVAL_S = 2.0
-_MAX_POLL_S = 90.0
+_POLL_INTERVAL_S = 1.5
+# Cap aggressively: most BC lookups either return in <15s or never. Past 20s
+# the wait isn't paying off — better to bail and rely on other waterfall
+# sources. Was 90s, killing wall-time on leads BC couldn't find.
+_MAX_POLL_S = 20.0
 
 
 def have_bettercontact_key() -> bool:

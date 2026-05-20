@@ -258,37 +258,47 @@ def run(
               f"(>={paid_threshold}) → will hit paid waterfall; "
               f"{n_cheap} get cheap pass only.")
 
-    # PRE-FETCH Dropcontact in ONE batch (10× faster than per-lead polling).
-    # We then prime the diskcache so the parallel finalize_lead workers find
-    # their result instantly without re-calling the API.
-    # TWO-PASS: only batch leads that qualified for paid enrichment.
+    # LAUNCH Dropcontact batch IN BACKGROUND, overlap with parallel finalize.
+    # Previously the DC batch was BLOCKING (~30s polling), then finalize ran
+    # (~30s). Now they run in parallel → wall-time drops by ~25s.
+    # Race-safe because finalize_lead's DC step reads the diskcache; if the
+    # background task hasn't primed it yet, finalize falls through to the
+    # other waterfall sources (Hunter/Datagma/BetterContact). When DC IS
+    # ready in time, every worker gets a clean cache hit.
+    from concurrent.futures import ThreadPoolExecutor as _BgTPE
+    _dc_executor = _BgTPE(max_workers=1)
+    _dc_future = None
     try:
         from dropcontact_client import enrich_batch, have_dropcontact_key
         paid_args = [a for a in finalize_args if a[5]]   # a[5] = use_paid
         if have_dropcontact_key() and paid_args:
             print(f"[Dropcontact] batch-enriching {len(paid_args)} paid-tier leads "
-                  f"(skipped {len(finalize_args) - len(paid_args)} cheap-only)…")
-            batch_rows = [
-                {"first": f, "last": l, "company": p.get("company_name", ""),
-                 "website": p.get("website")}
-                for (p, f, l, r, srcs, _up) in paid_args
-            ]
-            batch_result = enrich_batch(batch_rows)
-            try:
-                from pipeline import _CACHE, _CACHE_TTL
-                if _CACHE is not None:
-                    for (p, f, l, r, srcs, _up) in paid_args:
-                        key = f"dropcontact:{f}|{l}|{p.get('company_name', '')}"
-                        lookup_key = (f.lower(), l.lower(),
-                                       p.get("company_name", "").lower())
-                        result = batch_result.get(lookup_key)
-                        if result is not None:
-                            _CACHE.set(key, result, expire=_CACHE_TTL)
-                print(f"[Dropcontact] {sum(1 for v in batch_result.values() if v.get('email') or v.get('phone'))}/{len(paid_args)} returned data")
-            except Exception:
-                pass
+                  f"in BACKGROUND (skipped {len(finalize_args) - len(paid_args)} cheap-only)…")
+
+            def _dc_background_task():
+                batch_rows = [
+                    {"first": f, "last": l, "company": p.get("company_name", ""),
+                     "website": p.get("website")}
+                    for (p, f, l, r, srcs, _up) in paid_args
+                ]
+                batch_result = enrich_batch(batch_rows)
+                try:
+                    from pipeline import _CACHE, _CACHE_TTL
+                    if _CACHE is not None:
+                        for (p, f, l, r, srcs, _up) in paid_args:
+                            key = f"dropcontact:{f}|{l}|{p.get('company_name', '')}"
+                            lookup_key = (f.lower(), l.lower(),
+                                           p.get("company_name", "").lower())
+                            result = batch_result.get(lookup_key)
+                            if result is not None:
+                                _CACHE.set(key, result, expire=_CACHE_TTL)
+                except Exception:
+                    pass
+                return batch_result
+
+            _dc_future = _dc_executor.submit(_dc_background_task)
     except Exception as e:
-        print(f"[Dropcontact] batch failed ({e}); falling back to per-lead calls")
+        print(f"[Dropcontact] background batch failed ({e})")
 
     # Parallel finalize. We use the same worker count as the partial phase
     # since the rate-limited APIs (Brave, Serper, OSM, Dropcontact) all have
@@ -305,6 +315,21 @@ def run(
         for lead in exe.map(_one, finalize_args):
             setattr(lead, "is_new_lead", lead.company_siren in new_sirens)
             leads.append(lead)
+
+    # Drain the background Dropcontact task (might still be running if it
+    # was slower than parallel finalize). We need this to make stats
+    # accurate and to clean up the executor.
+    if _dc_future is not None:
+        try:
+            batch_result = _dc_future.result(timeout=60)
+            n_with_data = sum(
+                1 for v in batch_result.values()
+                if v.get("email") or v.get("phone")
+            )
+            print(f"[Dropcontact] background batch done: {n_with_data}/{len(batch_result)} returned data")
+        except Exception as e:
+            print(f"[Dropcontact] background batch error: {e}")
+    _dc_executor.shutdown(wait=True)
 
     # 3a-bis. Self-critique multi-pass: retry dropped leads with relaxed thresholds.
     if retry_dropped:

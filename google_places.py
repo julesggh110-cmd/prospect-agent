@@ -77,8 +77,23 @@ def _slug(s: str) -> str:
 
 
 def _query_places(query: str, max_results: int = 5) -> list[dict]:
+    """Query Serper /places. CACHED with 24h TTL (Google Business listings
+    don't change daily). Cache hit = 0 quota + 0 network.
+    """
     if not have_serper_key():
         return []
+    # Cache lookup first
+    cache_key = f"serper-places:{query}"
+    try:
+        from http_safe import _HTTP_CACHE
+        import json as _json
+        if _HTTP_CACHE is not None:
+            hit = _HTTP_CACHE.get(cache_key, default=None)
+            if hit is not None:
+                return _json.loads(hit)[:max_results]
+    except Exception:
+        pass
+
     key = os.environ.get("SERPER_API_KEY") or ""
     _THROTTLE.acquire()
     try:
@@ -96,13 +111,21 @@ def _query_places(query: str, max_results: int = 5) -> list[dict]:
             data = r.json()
     except (httpx.HTTPError, ValueError):
         return []
-    # /places billed against the same Serper quota → mark accordingly
     try:
         from quotas import mark_used
         mark_used("serper")
     except Exception:
         pass
-    return (data.get("places") or [])[:max_results]
+    out = data.get("places") or []
+    # Save to cache for warm runs
+    try:
+        from http_safe import _HTTP_CACHE
+        import json as _json
+        if _HTTP_CACHE is not None:
+            _HTTP_CACHE.set(cache_key, _json.dumps(out), expire=24 * 3600)
+    except Exception:
+        pass
+    return out[:max_results]
 
 
 # Approximate lat/lng of major FR cities — used to reject cross-city false

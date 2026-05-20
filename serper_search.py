@@ -63,7 +63,26 @@ class SerperSearch:
         """Run a Google search via Serper. Returns Brave-compatible results.
 
         Each result dict: {href, url, title, body}.
+
+        CACHED: results are stored in the shared HTTP cache with a 24-hour
+        TTL. Google search results don't change minute-to-minute and many
+        queries get re-issued across runs (same company, same person, same
+        Bear Brothers ICP). Cache hits make warm runs MUCH faster — search
+        accounts for ~30% of per-lead wall-time.
         """
+        # Cache lookup BEFORE throttle/HTTP — if we hit, we save the rate-limit
+        # slot too.
+        cache_key = f"serper:{max_results}:{query}"
+        try:
+            from http_safe import _HTTP_CACHE, _HTTP_CACHE_TTL_DEFAULT
+            import json as _json
+            if _HTTP_CACHE is not None:
+                hit = _HTTP_CACHE.get(cache_key, default=None)
+                if hit is not None:
+                    return _json.loads(hit)
+        except Exception:
+            pass
+
         _throttle()
         try:
             resp = self._client.post(
@@ -71,11 +90,10 @@ class SerperSearch:
                 json={
                     "q": query,
                     "num": min(max(max_results, 1), 20),
-                    "gl": "fr",      # geo
-                    "hl": "fr",      # interface lang
+                    "gl": "fr",
+                    "hl": "fr",
                 },
             )
-            # 429 → silently bail (quota exhausted)
             if resp.status_code == 429:
                 return []
             resp.raise_for_status()
@@ -83,7 +101,6 @@ class SerperSearch:
         except (httpx.HTTPError, ValueError):
             return []
 
-        # Track quota consumption — one Serper call = 1 credit
         try:
             from quotas import mark_used
             mark_used("serper")
@@ -95,14 +112,22 @@ class SerperSearch:
             url = item.get("link") or ""
             if not url:
                 continue
-            out.append(
-                {
-                    "href": url,
-                    "url": url,
-                    "title": item.get("title") or "",
-                    "body": item.get("snippet") or "",
-                }
-            )
+            out.append({
+                "href": url,
+                "url": url,
+                "title": item.get("title") or "",
+                "body": item.get("snippet") or "",
+            })
+
+        # Save to cache for future warm runs (24h TTL is enough — search
+        # results stabilize within hours for most queries).
+        try:
+            from http_safe import _HTTP_CACHE
+            import json as _json
+            if _HTTP_CACHE is not None:
+                _HTTP_CACHE.set(cache_key, _json.dumps(out), expire=24 * 3600)
+        except Exception:
+            pass
         return out
 
     def close(self) -> None:
