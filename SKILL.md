@@ -81,6 +81,35 @@ Required at runtime: nothing — the agent works with zero keys (just slower).
 
 Run `python setup_wizard.py --check` to confirm. If a key is missing, tell the user the URL to get one (in `setup_wizard.py`).
 
+## Outcome tracking & ICP self-tuning
+
+After sending cold emails, mark what actually happened so the agent learns:
+
+```bash
+# When a lead replies / books a meeting / converts:
+python lead_store.py mark 408400547 replied
+python lead_store.py mark 408400547 meeting_booked --note "RDV pris 22/5"
+python lead_store.py mark 408400547 closed_won
+
+# When it bounces / unsubscribes:
+python lead_store.py mark 408400547 bounced
+python lead_store.py mark 408400547 unsubscribed
+
+# Review outcome distribution + top-converting attributes:
+python lead_store.py outcomes
+
+# ICP self-tuning report (needs ≥20 outcomes to suggest changes):
+python icp_tuner.py bear-brothers-chr
+
+# Get the tuned ICP dict ready to use:
+python icp_tuner.py bear-brothers-chr --apply
+```
+
+The tuner computes UPLIFT per rule: how much more likely a lead matching
+this rule converts vs the average. Rules with uplift ≥1.5 are recommended
+for BOOST; ≤0.7 for CUT. Below 20 marked outcomes, the tuner refuses to
+suggest changes ("not enough signal").
+
 ## Quotas — track free-tier consumption
 
 Every API call increments a local counter (`data/quotas.db`). Use these

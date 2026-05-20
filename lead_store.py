@@ -76,11 +76,18 @@ CREATE INDEX IF NOT EXISTS idx_leads_last_campaign ON leads(tenant_id, last_camp
 CREATE INDEX IF NOT EXISTS idx_leads_person_email ON leads(person_email);
 """
 
-# Idempotent migrations from v1 (no tenant_id, no gdpr_deleted) → v2.
-# We swallow the "duplicate column" error for installs already on v2.
+# Idempotent migrations from v1 → v2 → v3. ALTER TABLE ADD COLUMN is safe
+# with DEFAULTs; the duplicate-column error is swallowed silently.
 _MIGRATIONS = [
+    # v2 — multi-tenancy + GDPR
     "ALTER TABLE leads ADD COLUMN tenant_id TEXT NOT NULL DEFAULT 'default'",
     "ALTER TABLE leads ADD COLUMN gdpr_deleted INTEGER NOT NULL DEFAULT 0",
+    # v3 — outcome tracking for ICP self-tuning
+    # outcome: NULL (unknown) | 'sent' | 'opened' | 'replied' | 'meeting_booked'
+    #         | 'closed_won' | 'closed_lost' | 'bounced' | 'unsubscribed'
+    "ALTER TABLE leads ADD COLUMN outcome TEXT",
+    "ALTER TABLE leads ADD COLUMN outcome_at TEXT",
+    "ALTER TABLE leads ADD COLUMN outcome_note TEXT",
 ]
 
 
@@ -287,6 +294,82 @@ def purge_older_than(days: int, *,
         return cur.rowcount
 
 
+VALID_OUTCOMES = (
+    "sent", "opened", "replied",
+    "meeting_booked", "closed_won", "closed_lost",
+    "bounced", "unsubscribed",
+)
+
+
+def mark_outcome(siren: str, outcome: str, *,
+                 note: Optional[str] = None,
+                 db_path: Optional[Path] = None,
+                 tenant_id: Optional[str] = None) -> int:
+    """Mark a lead's commercial outcome — fuels the ICP self-tuning loop.
+
+    Allowed outcomes: sent, opened, replied, meeting_booked, closed_won,
+    closed_lost, bounced, unsubscribed.
+
+    Returns 1 if updated, 0 if no matching lead.
+    """
+    if outcome not in VALID_OUTCOMES:
+        raise ValueError(f"outcome must be one of: {', '.join(VALID_OUTCOMES)}")
+    if not siren:
+        return 0
+    tenant = tenant_id or _current_tenant()
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc).isoformat()
+    with _conn(db_path) as c:
+        cur = c.execute(
+            "UPDATE leads SET outcome=?, outcome_at=?, outcome_note=? "
+            "WHERE siren=? AND tenant_id=?",
+            (outcome, now, note, siren, tenant),
+        )
+        return cur.rowcount
+
+
+def outcome_stats(db_path: Optional[Path] = None,
+                  tenant_id: Optional[str] = None) -> dict:
+    """Aggregate outcome distribution for the current tenant. Used by the
+    ICP self-tuner to compute correlation between lead attributes and
+    actual conversion.
+    """
+    tenant = tenant_id or _current_tenant()
+    out: dict = {"total": 0, "by_outcome": {}, "leads": []}
+    with _conn(db_path) as c:
+        total = c.execute(
+            "SELECT COUNT(*) AS n FROM leads WHERE tenant_id=? AND gdpr_deleted=0",
+            (tenant,),
+        ).fetchone()
+        out["total"] = total["n"]
+        rows = c.execute(
+            "SELECT outcome, COUNT(*) AS n FROM leads WHERE tenant_id=? AND outcome IS NOT NULL "
+            "GROUP BY outcome ORDER BY n DESC",
+            (tenant,),
+        ).fetchall()
+        for r in rows:
+            out["by_outcome"][r["outcome"]] = r["n"]
+        # Bundle each lead with its outcome + the icp_score + payload for
+        # downstream learning. payload contains cuisine_type, naf, gmb_rating
+        # etc. that the tuner needs.
+        rows = c.execute(
+            "SELECT siren, company_name, icp_score, outcome, outcome_at, payload_json "
+            "FROM leads WHERE tenant_id=? AND outcome IS NOT NULL "
+            "ORDER BY outcome_at DESC LIMIT 500",
+            (tenant,),
+        ).fetchall()
+        for r in rows:
+            out["leads"].append({
+                "siren": r["siren"],
+                "company_name": r["company_name"],
+                "icp_score": r["icp_score"],
+                "outcome": r["outcome"],
+                "outcome_at": r["outcome_at"],
+                "payload": json.loads(r["payload_json"]) if r["payload_json"] else {},
+            })
+    return out
+
+
 def list_tenants(db_path: Optional[Path] = None) -> list[dict]:
     """Inspect tenants (admin function — bypasses tenant filter intentionally)."""
     with _conn(db_path) as c:
@@ -317,6 +400,14 @@ def _cli() -> None:
     pg = sub.add_parser("purge", help="GDPR: hard-delete leads older than N days")
     pg.add_argument("days", type=int, help="Retention window in days")
 
+    mo = sub.add_parser("mark", help="Mark a commercial outcome for a lead "
+                                       "(fuels ICP self-tuning)")
+    mo.add_argument("siren")
+    mo.add_argument("outcome", choices=list(VALID_OUTCOMES))
+    mo.add_argument("--note", help="Optional free-text context")
+
+    sub.add_parser("outcomes", help="Show outcome distribution + top correlations")
+
     args = p.parse_args()
 
     if args.cmd == "stats":
@@ -335,6 +426,37 @@ def _cli() -> None:
     elif args.cmd == "purge":
         n = purge_older_than(args.days)
         print(f"Purged {n} lead(s) older than {args.days} days")
+    elif args.cmd == "mark":
+        n = mark_outcome(args.siren, args.outcome, note=args.note)
+        if n == 0:
+            print(f"No lead found for SIREN {args.siren} in current tenant.")
+        else:
+            print(f"Marked {args.siren} → {args.outcome}.")
+    elif args.cmd == "outcomes":
+        s = outcome_stats()
+        print(f"Tenant: {_current_tenant()}  Total leads: {s['total']}")
+        if not s["by_outcome"]:
+            print("  (no outcomes recorded yet — use `python lead_store.py mark <siren> <outcome>`)")
+            return
+        print("\nOutcome distribution:")
+        for o, n in s["by_outcome"].items():
+            print(f"  {o:18s} {n:>4d}")
+        # Quick insight: top cuisine types among repliers
+        repliers = [l for l in s["leads"] if l["outcome"] in ("replied", "meeting_booked", "closed_won")]
+        if repliers:
+            from collections import Counter
+            cuisines = Counter(
+                (l["payload"].get("cuisine_type") or "(unknown)") for l in repliers
+            )
+            print(f"\nTop cuisine types among {len(repliers)} positive outcomes:")
+            for ct, n in cuisines.most_common(5):
+                print(f"  {ct[:30]:30s} {n}")
+            nafs = Counter(
+                (l["payload"].get("company_naf") or "(unknown)") for l in repliers
+            )
+            print("Top NAF among positive outcomes:")
+            for naf, n in nafs.most_common(5):
+                print(f"  {naf[:30]:30s} {n}")
 
 
 if __name__ == "__main__":
