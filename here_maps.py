@@ -102,6 +102,12 @@ def _geocode_city(city: str) -> Optional[tuple[float, float]]:
             if r.status_code != 200:
                 return None
             data = r.json()
+            # Successful geocode = 1 HERE transaction
+            try:
+                from quotas import mark_used
+                mark_used("here_maps")
+            except Exception:
+                pass
             items = data.get("items") or []
             if not items:
                 return None
@@ -133,6 +139,11 @@ def _discover_business(name: str, lat: float, lng: float,
             if r.status_code != 200:
                 return []
             data = r.json()
+            try:
+                from quotas import mark_used
+                mark_used("here_maps")
+            except Exception:
+                pass
             return data.get("items") or []
     except Exception:
         return []

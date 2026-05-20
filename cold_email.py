@@ -191,6 +191,11 @@ def generate_cold_email(
             system=_SYSTEM_PROMPT_FR,
             messages=[{"role": "user", "content": user_payload}],
         )
+        try:
+            from quotas import mark_used
+            mark_used("anthropic")
+        except Exception:
+            pass
         text = resp.content[0].text if resp.content else ""
         text = text.strip()
         if text.startswith("```"):

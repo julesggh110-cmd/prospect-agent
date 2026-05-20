@@ -90,6 +90,11 @@ class PappersClient:
             if resp.status_code == 404:
                 return None
             resp.raise_for_status()
+            try:
+                from quotas import mark_used
+                mark_used("pappers")
+            except Exception:
+                pass
             return PappersCompany.model_validate(resp.json())
         except (httpx.HTTPError, ValueError):
             return None

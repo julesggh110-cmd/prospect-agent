@@ -51,6 +51,11 @@ def find_email_by_domain(first: str, last: str, domain: str) -> Optional[dict]:
             })
             if r.status_code != 200:
                 return None
+            try:
+                from quotas import mark_used
+                mark_used("hunter")
+            except Exception:
+                pass
             d = r.json().get("data") or {}
             email = d.get("email")
             if not email:
@@ -83,6 +88,11 @@ def verify_email(email: str) -> Optional[dict]:
             })
             if r.status_code != 200:
                 return None
+            try:
+                from quotas import mark_used
+                mark_used("hunter")
+            except Exception:
+                pass
             d = r.json().get("data") or {}
             return {
                 "email": email.lower(),
@@ -120,6 +130,11 @@ def domain_search(domain: str, limit: int = 5) -> Optional[list[dict]]:
             })
             if r.status_code != 200:
                 return None
+            try:
+                from quotas import mark_used
+                mark_used("hunter")
+            except Exception:
+                pass
             d = r.json().get("data") or {}
             emails = d.get("emails") or []
             return [{

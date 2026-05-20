@@ -126,6 +126,33 @@ def run(
         print("       If you need verified emails, run on a host with port 25 open,")
         print("       or rely on DROPCONTACT_API_KEY for verified results.")
 
+    # 0-bis. QUOTAS — print the remaining capacity + check daily cap.
+    # We want the operator (or Multica) to see at a glance:
+    #   - how many leads they can still process today
+    #   - if any free tier is at risk of running out mid-run
+    from quotas import summary as _quota_summary, get_daily_cap, daily_leads_used
+    qs = _quota_summary()
+    bottleneck = qs.get("bottleneck_leads_remaining")
+    bottleneck_svc = qs.get("bottleneck_service_label") or qs.get("bottleneck_service")
+    if bottleneck is not None:
+        print(f"[Quotas] {bottleneck} leads remaining (bottleneck: {bottleneck_svc})")
+        if bottleneck < volume:
+            print(f"[Quotas] WARN: you asked for {volume} leads but only ~{bottleneck} "
+                  f"can be enriched before {bottleneck_svc} runs out.")
+    # Daily cap enforcement
+    cap = get_daily_cap()
+    if cap > 0:
+        used_today = daily_leads_used()
+        if used_today + volume > cap:
+            allowed = max(0, cap - used_today)
+            print(f"[Quotas] DAILY CAP HIT — already used {used_today}/{cap} today, "
+                  f"asked for {volume}. Limiting this run to {allowed} leads.")
+            if allowed == 0:
+                print("[Quotas] Refusing to run. Reset via `python quotas.py set-cap 0` "
+                      "or wait until tomorrow.")
+                sys.exit(2)
+            volume = allowed
+
     # 1. Source via Sirene — use paginated search so --volume > 25 works
     # (Sirene caps each page at 25; without iteration, asking for 100 leads
     # used to return 25).
@@ -333,6 +360,24 @@ def run(
         kept_path = export_leads([l for l in leads if not l.dropped])
 
     _summary(leads, kept_path, time.time() - t0)
+
+    # Final quota status — show what's left after this run
+    try:
+        from quotas import summary as _qs2
+        s = _qs2()
+        if s.get("bottleneck_leads_remaining") is not None:
+            print()
+            print(f"[Quotas] After this run: ~{s['bottleneck_leads_remaining']} "
+                  f"leads still possible (bottleneck: "
+                  f"{s.get('bottleneck_service_label')}).")
+            crit = [x for x in s["services"] if x["status"] == "critical"]
+            if crit:
+                for c in crit:
+                    print(f"[Quotas] ⚠ {c['label']} is {c['percent_used']}% used "
+                          f"— upgrade or wait for {c['period']} reset.")
+    except Exception:
+        pass
+
     return kept_path
 
 
@@ -355,10 +400,13 @@ def _cli() -> None:
     p.add_argument("--max-workers", type=int, default=8,
                    help="Parallel enrichment workers (default 8)")
     p.add_argument("--icp-preset",
-                   choices=["cavistes-paris", "palaces-paris", "bear-brothers-chr"],
+                   choices=["cavistes-paris", "palaces-paris", "bear-brothers-chr",
+                            "comeos-formation"],
                    help="Apply a preset ICP profile and add icp_score column. "
                         "bear-brothers-chr uses GMB cuisine_type to filter "
-                        "vegan/halal/cantine and boost gastro/bar/brasserie.")
+                        "vegan/halal/cantine and boost gastro/bar/brasserie. "
+                        "comeos-formation targets santé/médico-social/industrie/BTP "
+                        "50-249 emp en Occitanie (Comeos QSE/RH training).")
     p.add_argument("--only-new", action="store_true",
                    help="Skip companies already in lead_store (dedup across runs)")
     p.add_argument("--push-to-hubspot", action="store_true",
@@ -374,6 +422,11 @@ def _cli() -> None:
                    help="Tenant ID for multi-tenant deployments (defaults to env "
                         "PROSPECT_AGENT_TENANT or 'default'). Leads are isolated "
                         "per tenant in the lead store.")
+    p.add_argument("--daily-cap", type=int, default=None,
+                   help="Set the daily lead cap before running. Equivalent to "
+                        "`python quotas.py set-cap N`. Use 0 to disable.")
+    p.add_argument("--quotas", action="store_true",
+                   help="Print the current quota status and exit (no campaign).")
     p.add_argument("--generate-emails", action="store_true",
                    help="Generate a personalized FR cold email per kept lead via "
                         "Claude Haiku. ~$0.0015/lead. Saved into the XLSX export.")
@@ -382,6 +435,16 @@ def _cli() -> None:
     p.add_argument("--sender-company", default="Bear Brothers",
                    help="Your company name (signed/referenced in the email)")
     args = p.parse_args()
+
+    # Quota helpers — let the operator inspect / set caps from the same CLI
+    if args.quotas:
+        from quotas import summary as _qs, _format_table  # type: ignore
+        print(_format_table(_qs()))
+        return
+    if args.daily_cap is not None:
+        from quotas import set_daily_cap
+        set_daily_cap(args.daily_cap)
+        print(f"[Quotas] Daily cap set to {args.daily_cap} leads.")
 
     if not any([args.query, args.naf, args.code_postal, args.departement, args.region]):
         p.error("provide at least one filter (--query / --naf / --code-postal / ...)")
@@ -397,12 +460,14 @@ def _cli() -> None:
         from icp import (
             PRESET_BEAR_BROTHERS_CHR,
             PRESET_CAVISTES_PREMIUM_PARIS,
+            PRESET_COMEOS_FORMATION,
             PRESET_PALACES_PARIS,
         )
         icp_profile = {
             "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
             "palaces-paris": PRESET_PALACES_PARIS,
             "bear-brothers-chr": PRESET_BEAR_BROTHERS_CHR,
+            "comeos-formation": PRESET_COMEOS_FORMATION,
         }[args.icp_preset]
 
     run(

@@ -83,6 +83,13 @@ class SerperSearch:
         except (httpx.HTTPError, ValueError):
             return []
 
+        # Track quota consumption — one Serper call = 1 credit
+        try:
+            from quotas import mark_used
+            mark_used("serper")
+        except Exception:
+            pass
+
         out: list[dict] = []
         for item in data.get("organic") or []:
             url = item.get("link") or ""

@@ -112,6 +112,14 @@ def enrich_person(
                     return None
                 item = items[0]
                 email = item.get("enriched_email") or item.get("email")
+                # PAY-PER-VALID: BC only charges when a result is returned
+                # (email or phone). We mark the credit only on success.
+                if email or item.get("enriched_phone_number") or item.get("phone_number"):
+                    try:
+                        from quotas import mark_used
+                        mark_used("bettercontact")
+                    except Exception:
+                        pass
                 phone = (item.get("enriched_phone_number")
                          or item.get("phone_number")
                          or item.get("phone"))

@@ -64,6 +64,12 @@ def find_full(first: str, last: str, company: str,
             })
             if r.status_code != 200:
                 return None
+            try:
+                from quotas import mark_used
+                # Datagma charges 1 credit for the call, +30 if mobile was requested
+                mark_used("datagma", count=31 if want_phone else 1)
+            except Exception:
+                pass
             d = r.json()
             # Datagma's response is nested; flatten what we use.
             person = d.get("person") or {}

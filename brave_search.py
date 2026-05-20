@@ -75,6 +75,12 @@ class BraveSearch:
         except (httpx.HTTPError, ValueError):
             return []
 
+        try:
+            from quotas import mark_used
+            mark_used("brave_search")
+        except Exception:
+            pass
+
         out: list[dict] = []
         for item in (data.get("web") or {}).get("results") or []:
             url = item.get("url") or ""

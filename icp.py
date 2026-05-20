@@ -204,15 +204,95 @@ PRESET_BEAR_BROTHERS_CHR = {
 }
 
 
+# Comeos — Toulouse-based QSE consulting + training firm. Triple cert
+# (management, RH, santé-sécurité au travail, qualité, pratiques pro santé).
+# Target: French SMBs 50-249 employees whose business creates obligatory
+# QSE / HSE / RH training spend.
+# Prioritization order:
+#   1. Santé / médico-social (Comeos' deepest expertise) — EHPAD, hébergement
+#      social, cabinets médicaux. NAF 87.10*, 87.30*, 86.21Z, 86.22*.
+#   2. Industrie — fab. métallique, machines, agro. NAF 25.*, 28.*, 10.*, 11.*.
+#   3. BTP — formation sécurité obligatoire. NAF 41.20*, 43.*.
+#   4. Services B2B — emploi/intérim (78.*), services bât. (81.*), SSII (62.*).
+# Geo: Occitanie en priorité (31, 09, 11, 12, 30, 32, 34, 46, 48, 65, 66, 81,
+# 82) puis grand sud-ouest. Bonus pour entreprise avec site/LinkedIn (maturité
+# RH = budget formation existant).
+PRESET_COMEOS_FORMATION = {
+    "name": "Comeos — Formation/QSE PME 50-249",
+    "rules": [
+        # Sector fit: tiered weights, only the best-fit tier scores
+        {"name": "Santé/médico-social (EHPAD, hébergement, cabinets)",
+         "weight": 25,
+         "naf_starts_with": [
+             "87.10", "87.30",          # EHPAD + hébergement social
+             "86.21", "86.22", "86.23", # cabinets médicaux + cliniques
+             "86.90",                    # autres soins
+             "88.10", "88.91", "88.99",  # action sociale sans hébergement
+         ]},
+        {"name": "Industrie (QSE/sécurité au travail)",
+         "weight": 15,
+         "naf_starts_with": [
+             "10.", "11.",              # agro
+             "20.", "21.", "22.",       # chimie/pharma/plastiques
+             "23.", "24.", "25.",       # minéraux/métallurgie/produits métal
+             "26.", "27.", "28.",       # électronique/machines
+             "29.", "30.",              # automobile/transport
+         ]},
+        {"name": "BTP (formation sécurité obligatoire)",
+         "weight": 12,
+         "naf_starts_with": [
+             "41.20", "42.",            # construction + génie civil
+             "43.",                      # travaux spécialisés
+         ]},
+        {"name": "Services B2B (management + RH)",
+         "weight": 8,
+         "naf_starts_with": [
+             "78.",                      # emploi/intérim
+             "81.",                      # services aux bâtiments
+             "62.", "63.",              # IT/SSII
+         ]},
+        # Right size: 50-249 employees (Sirene codes 21=50-99, 22=100-199, 31=200-249)
+        {"name": "Taille 50-249 emp (cible PME ETI)",
+         "weight": 15,
+         "size_in": ["21", "22", "31"]},
+        # Geo: Occitanie priority
+        {"name": "Occitanie (priorité géo)",
+         "weight": 10,
+         "city_in": [
+             # Major cities of Occitanie depts 31/09/11/12/30/32/34/46/48/65/66/81/82
+             "TOULOUSE", "MONTPELLIER", "NIMES", "PERPIGNAN", "BEZIERS",
+             "MONTAUBAN", "ALBI", "CARCASSONNE", "TARBES", "RODEZ", "AUCH",
+             "CAHORS", "MENDE", "FOIX", "NARBONNE", "SETE", "BLAGNAC",
+             "COLOMIERS", "TOURNEFEUILLE", "MURET", "BALMA", "LABEGE",
+             "RAMONVILLE-SAINT-AGNE", "L'UNION", "PORTET-SUR-GARONNE",
+             "CASTANET-TOLOSAN", "PLAISANCE-DU-TOUCH", "SAINT-ORENS-DE-GAMEVILLE",
+             "FONSORBES", "CASTRES", "MAZAMET", "MILLAU", "VILLEFRANCHE-DE-ROUERGUE",
+             "LOURDES", "AGDE", "FRONTIGNAC",
+         ]},
+        # Contactability: website + decision-maker
+        {"name": "A un site web actif",
+         "weight": 10,
+         "has_field": "company_website"},
+        {"name": "Email décideur identifié",
+         "weight": 10,
+         "has_field_confidence_above": {"person_email": 50}},
+        {"name": "LinkedIn décideur",
+         "weight": 5,
+         "has_field_confidence_above": {"person_linkedin": 50}},
+    ],
+}
+
+
 def _cli() -> None:
     import argparse
     import json
     p = argparse.ArgumentParser(description="Print a preset ICP profile or score one lead.")
-    p.add_argument("preset", choices=["cavistes-paris", "palaces-paris"])
+    p.add_argument("preset", choices=["cavistes-paris", "palaces-paris", "comeos-formation"])
     args = p.parse_args()
     presets = {
         "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
         "palaces-paris": PRESET_PALACES_PARIS,
+        "comeos-formation": PRESET_COMEOS_FORMATION,
     }
     print(json.dumps(presets[args.preset], indent=2, ensure_ascii=False))
 

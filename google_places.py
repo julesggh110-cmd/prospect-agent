@@ -96,6 +96,12 @@ def _query_places(query: str, max_results: int = 5) -> list[dict]:
             data = r.json()
     except (httpx.HTTPError, ValueError):
         return []
+    # /places billed against the same Serper quota → mark accordingly
+    try:
+        from quotas import mark_used
+        mark_used("serper")
+    except Exception:
+        pass
     return (data.get("places") or [])[:max_results]
 
 

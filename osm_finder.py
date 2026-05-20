@@ -75,6 +75,11 @@ def _geocode_city(city: str) -> Optional[tuple[float, float]]:
             )
             if r.status_code != 200:
                 return None
+            try:
+                from quotas import mark_used
+                mark_used("osm")  # geocode call
+            except Exception:
+                pass
             data = r.json()
             if not data:
                 return None
@@ -142,6 +147,11 @@ def find_business_on_osm(name: str, city: Optional[str] = None) -> Optional[dict
             r = c.post(_OVERPASS_URL, data={"data": q})
             if r.status_code != 200:
                 return None
+            try:
+                from quotas import mark_used
+                mark_used("osm")  # overpass call
+            except Exception:
+                pass
             data = r.json()
     except Exception:
         return None

@@ -95,6 +95,13 @@ def _submit_batch(rows: list[dict]) -> Optional[str]:
             if r.status_code >= 400:
                 return None
             data = r.json()
+            # Mark quota: 1 credit per ROW (not per batch). Even if the row
+            # returns nothing, Dropcontact counts it.
+            try:
+                from quotas import mark_used
+                mark_used("dropcontact", count=len(rows))
+            except Exception:
+                pass
             return data.get("request_id")
     except Exception:
         return None

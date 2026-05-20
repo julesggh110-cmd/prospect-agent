@@ -81,6 +81,31 @@ Required at runtime: nothing — the agent works with zero keys (just slower).
 
 Run `python setup_wizard.py --check` to confirm. If a key is missing, tell the user the URL to get one (in `setup_wizard.py`).
 
+## Quotas — track free-tier consumption
+
+Every API call increments a local counter (`data/quotas.db`). Use these
+commands to know what's left before launching a campaign:
+
+```bash
+python quotas.py                  # human-readable table (use this in Multica)
+python quotas.py json             # machine-readable for automation
+python quotas.py set-cap 50       # cap to 50 leads/day max
+python quotas.py get-cap          # show current cap
+python quotas.py reset dropcontact   # reset one service (admin)
+
+# Quick inline from the main CLI:
+python run_campaign.py --quotas
+python run_campaign.py --naf 56.10A --departement 31 --volume 10 --daily-cap 50 ...
+```
+
+Every campaign run prints :
+- Quota status BEFORE (max leads possible + warning if asking too much)
+- Quota status AFTER (what's left + critical alerts)
+
+The "MAX REMAINING LEADS POSSIBLE" line names the **bottleneck service** —
+that's the one that will hit zero first. Upgrade it (or wait for its reset
+period) to lift the ceiling.
+
 ## What v0.9.0 added (paid-layer ready)
 
 - **Serper.dev integration** (`serper_search.py`) — drop-in search backend, **2,500 free queries one-shot**. Becomes the primary backend because Google CSE is closed to new customers since 2025 and Brave's free quota is small.
