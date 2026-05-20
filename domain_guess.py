@@ -181,7 +181,26 @@ def _candidate_domains(
 
 
 def _is_real_site(url: str, name: str, city: Optional[str] = None) -> bool:
-    """HEAD then GET-prefix; True iff response looks like a real business site."""
+    """HEAD then GET-prefix; True iff response looks like a real business site.
+
+    We are intentionally STRICT here because the candidate list contains short,
+    plausible-looking domains (`navarre.fr`, `septime.fr`) that almost always
+    belong to unrelated businesses. Requirements to accept:
+
+    1. HTTP 2xx/3xx with a real (>500 char) HTML body.
+    2. The page must mention the distinguishing slug of the brand name in
+       either its <title> OR within the first 4 KB of body text — French
+       generic signals alone ("menu", "réservation") are not enough.
+    3. We additionally require either:
+        - the city name to appear somewhere on the page, OR
+        - all multi-token name pieces to co-occur (so "Le Bibent" → both
+          "bibent" must appear; "Chez Navarre" → "navarre"+city or
+          "chez navarre"); single-word brands need city corroboration.
+
+    These rules eliminate parked domains and unrelated namesakes at the cost
+    of missing a few legit-but-bare landing pages. For a prospection use case,
+    missing is always better than wrong.
+    """
     try:
         with httpx.Client(
             timeout=TIMEOUT,
@@ -190,32 +209,62 @@ def _is_real_site(url: str, name: str, city: Optional[str] = None) -> bool:
             verify=False,
             http2=False,
         ) as c:
-            # HEAD first — fast existence check
             r = c.head(url)
             if r.status_code >= 400 or r.status_code == 0:
                 return False
-            # Parked/registrar pages often serve 200 with tiny HTML; verify via GET
             r2 = c.get(url)
             if r2.status_code >= 400:
                 return False
-            html = (r2.text or "").lower()
-            if len(html) < 200:
+            html = (r2.text or "")
+            if len(html) < 500:
                 return False
-            # Sanity: page should mention name or city or a French-language signal
-            name_slug = _slugify(_drop_leading_article(name), keep_hyphen=False)
-            if name_slug and name_slug in _slugify(html, keep_hyphen=False):
-                return True
-            if city and _slugify(city, keep_hyphen=False) in _slugify(html, keep_hyphen=False):
-                return True
-            # Generic French restaurant signals
-            french_signals = (
-                "menu", "carte", "réservation", "reservation", "horaires",
-                "ouverture", "restaurant", "contact", "à propos", "a propos",
-            )
-            if any(sig in html for sig in french_signals):
-                return True
     except Exception:
         return False
+
+    # Lowercase + accent-strip the full page once
+    page = _strip_diacritics(html).lower()
+
+    # Extract the <title> tag for stronger signal
+    title_match = re.search(r"<title[^>]*>(.*?)</title>", page, re.DOTALL)
+    title = (title_match.group(1) if title_match else "")[:300]
+    page_slug = _slugify(page[:4000], keep_hyphen=False)
+    title_slug = _slugify(title, keep_hyphen=False)
+    city_slug = _slugify(city, keep_hyphen=False) if city else None
+
+    # Build candidate name forms — both the parent name AND any parenthesised
+    # trade name (Sirene records like "STEVO'S DINING (LA FAIM DES HARICOTS)").
+    parens = re.findall(r"\(([^)]+)\)", name)
+    no_paren = re.sub(r"\([^)]*\)", "", name).strip()
+    candidates_for_name = [_drop_leading_article(no_paren), name, *parens]
+
+    # Build candidate name forms — both the parent name AND any parenthesised
+    # trade name. We accept a match against ANY of them.
+    for cand in candidates_for_name:
+        cand = (cand or "").strip()
+        if not cand:
+            continue
+        slug = _slugify(cand, keep_hyphen=False)
+        words = [
+            _slugify(w, keep_hyphen=False)
+            for w in re.split(r"\W+", cand)
+            if len(w) > 2
+        ]
+        if not slug or len(slug) < 4:
+            continue
+
+        # Rule 2: name presence in title OR first 4 KB
+        name_present = slug in title_slug or slug in page_slug
+        if not name_present:
+            continue
+
+        # Rule 3: corroboration. Either city on page, or all multi-word tokens
+        # present. Single-word brands without city → REJECT (high false-positive
+        # rate from registered namesakes / domain squatters).
+        if city_slug and city_slug in page_slug:
+            return True
+        if len(words) >= 2 and all(w in page_slug for w in words):
+            return True
+
     return False
 
 

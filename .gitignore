@@ -29,6 +29,7 @@ data/*.db
 data/cache/
 !data/.gitkeep
 output/
+benchmark/bench-*.md
 
 # OS
 .DS_Store
