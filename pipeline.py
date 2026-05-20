@@ -150,6 +150,9 @@ def enrich_company_partial(sirene_company) -> dict:
             })
 
     # 1. Try Pappers FIRST — direct website, email, phone (skip the DDG guess).
+    # For chains (size ≥ 50 employees = code 21+) we ALSO fetch the local
+    # SIRET to get the actual local phone/address (which differs from the HQ
+    # that Sirene's SIREN points to).
     pappers_site: Optional[str] = None
     pappers_email: Optional[str] = None
     pappers_phone: Optional[str] = None
@@ -173,6 +176,34 @@ def enrich_company_partial(sirene_company) -> dict:
                     if d.get("nom")
                 ]
 
+    # 1-bis. Chain detection: when the company has 50+ employees (size code
+    # 21+) we're likely looking at a chain HQ. Pull the LOCAL SIRET data to
+    # get the actual establishment phone/address — not the chain's siège.
+    LARGE_SIZES = {"21", "22", "31", "32", "41", "42", "51", "52", "53"}
+    is_chain_local = (size or "") in LARGE_SIZES
+    if is_chain_local and have_pappers_key():
+        # Get SIRET from the Sirene siege (already collected)
+        siret = None
+        if hasattr(sirene_company, "model_dump"):
+            siege = getattr(c, "siege", None)
+            if siege:
+                siret = getattr(siege, "siret", None) if not isinstance(siege, dict) else siege.get("siret")
+        else:
+            siret = ((sirene_company.get("siege") or {}).get("siret")
+                     if isinstance(sirene_company, dict) else None)
+        if siret and len(siret) == 14:
+            @_cached("pappers_siret", siret)
+            def _fetch_siret():
+                from pappers_client import PappersClient
+                with PappersClient() as pc:
+                    return pc.get_by_siret(siret)
+            site_data = _fetch_siret() or {}
+            # Local phone from the establishment beats the HQ phone we got via SIREN
+            local_phone = (site_data.get("telephone") or
+                           (site_data.get("etablissement") or {}).get("telephone"))
+            if local_phone and not pappers_phone:
+                pappers_phone = local_phone
+
     # 2. Website: Pappers > DDG search > OSM tag > direct .fr/.com domain guess.
     @_cached("website", f"{name}|{city or ''}")
     def _find_site():
@@ -184,48 +215,55 @@ def enrich_company_partial(sirene_company) -> dict:
         return None
     website = _find_site()
 
-    # 2b. OSM fallback — for shop/resto/bar storefronts, OSM tags are gold.
-    # We also pull the OSM phone and Instagram/Facebook handles since we have them.
-    osm_data: Optional[dict] = None
-    if not website or not pappers_phone:
-        @_cached("osm", f"{name}|{city or ''}")
-        def _osm():
-            try:
-                from osm_finder import find_business_on_osm
-                return find_business_on_osm(name, city)
-            except Exception:
-                return None
-        osm_data = _osm()
-        if osm_data and not website and osm_data.get("website"):
-            website = osm_data["website"]
+    # 2b-d. OSM + GMB + HERE — these 3 sources are INDEPENDENT (none reads
+    # the others' results). Run them in parallel via a small thread pool —
+    # cuts wall-time from ~6s sequential to ~2s parallel.
+    @_cached("osm", f"{name}|{city or ''}")
+    def _osm():
+        try:
+            from osm_finder import find_business_on_osm
+            return find_business_on_osm(name, city)
+        except Exception:
+            return None
 
-    # 2c. Google My Business via Serper /places. Gives cuisine TYPE + rating
-    # + canonical website. Crucial for ICP filtering (vegan vs gastro).
     @_cached("gmb", f"{name}|{city or ''}")
-    def _gmb():
+    def _gmb_lookup():
         try:
             p = find_business_place(name, city)
             return normalize_place(p) if p else None
         except Exception:
             return None
-    gmb_data = _gmb() or {}
 
-    if not website and gmb_data.get("website"):
-        website = gmb_data["website"].rstrip("/")
+    @_cached("here", f"{name}|{city or ''}")
+    def _here_lookup():
+        if not have_here_key():
+            return None
+        try:
+            return find_business_here(name, city)
+        except Exception:
+            return None
 
-    # 2d. HERE Maps Places — 250k free transactions/month, has PHONE numbers
-    # (Serper's /places doesn't return phones in basic responses, HERE does).
-    # This is the big free win for company_phone coverage.
+    osm_data: Optional[dict] = None
+    gmb_data: dict = {}
     here_data: dict = {}
-    if have_here_key():
-        @_cached("here", f"{name}|{city or ''}")
-        def _here():
-            try:
-                return find_business_here(name, city)
-            except Exception:
-                return None
-        here_data = _here() or {}
-        if not website and here_data.get("website"):
+    from concurrent.futures import ThreadPoolExecutor as _PartialTPE
+    with _PartialTPE(max_workers=3) as exe:
+        futs = {
+            "osm":  exe.submit(_osm),
+            "gmb":  exe.submit(_gmb_lookup),
+            "here": exe.submit(_here_lookup),
+        }
+        osm_data = futs["osm"].result()
+        gmb_data = futs["gmb"].result() or {}
+        here_data = futs["here"].result() or {}
+
+    # Promote website from any of the 3 sources if we don't have one
+    if not website:
+        if osm_data and osm_data.get("website"):
+            website = osm_data["website"]
+        elif gmb_data.get("website"):
+            website = gmb_data["website"].rstrip("/")
+        elif here_data.get("website"):
             website = here_data["website"].rstrip("/")
 
     # 2c. Direct domain-guess fallback (e.g. lebibent.com). Free, fast, and works
@@ -465,6 +503,8 @@ def enrich_company_partial(sirene_company) -> dict:
         "cuisine_type": gmb_data.get("type") or gmb_data.get("category"),
         "gmb_rating": gmb_data.get("rating"),
         "gmb_rating_count": gmb_data.get("rating_count"),
+        "is_operating": gmb_data.get("is_operating"),
+        "permanently_closed": gmb_data.get("permanently_closed"),
     }
 
 
@@ -525,6 +565,54 @@ def _name_in_linkedin_url(first: str, last: str, url: Optional[str]) -> bool:
     return False
 
 
+def preliminary_score(partial: dict) -> int:
+    """Cheap-source-only 'is this lead worth paid enrichment' score (0-100).
+
+    Computed from the FREE-tier data already collected in `partial` (Sirene +
+    Pappers free + scraping + OSM + GMB + HERE). Used by run_campaign's
+    two-pass strategy: if score < threshold, skip the paid waterfall
+    (Dropcontact + Hunter + Datagma + BetterContact) to save credits.
+
+    Rules (additive):
+      +30 has GMB cuisine_type (= confirmed operational real business)
+      +20 has GMB rating >= 4.0 (= established, popular)
+      +15 has GMB rating_count >= 20 (= real customer base, not phantom)
+      +20 has a verified company website (strict-FR-filter passed)
+      +10 has a phone (any source)
+      +5  has company LinkedIn
+      +5  has at least one dirigeant nominatif
+    """
+    score = 0
+    if partial.get("cuisine_type"):
+        score += 30
+    r = partial.get("gmb_rating")
+    if r is not None:
+        try:
+            if float(r) >= 4.0:
+                score += 20
+        except Exception:
+            pass
+    rc = partial.get("gmb_rating_count")
+    if rc is not None:
+        try:
+            if int(rc) >= 20:
+                score += 15
+        except Exception:
+            pass
+    if partial.get("website"):
+        score += 20
+    co_phone = (partial.get("company_phone") or {}).get("value")
+    if co_phone:
+        score += 10
+    co_li = (partial.get("company_linkedin") or {}).get("value")
+    if co_li:
+        score += 5
+    dirs = partial.get("legal_dirigeants") or []
+    if dirs and dirs[0].get("first") and dirs[0].get("last"):
+        score += 5
+    return min(100, score)
+
+
 def finalize_lead(
     partial: dict,
     *,
@@ -533,6 +621,7 @@ def finalize_lead(
     person_role: str,
     person_sources: list[str],
     naf_label: Optional[str] = None,
+    use_paid_sources: bool = True,
 ) -> Lead:
     """Build a triangulated Lead from a partial + Claude's decision-maker pick.
 
@@ -541,6 +630,10 @@ def finalize_lead(
     by one source (Sirene) can climb to high confidence if the website team
     page mentions it AND the LinkedIn URL contains it AND the SMTP probe
     accepts the matching email pattern.
+
+    `use_paid_sources`: when False, skips the entire paid waterfall
+    (Dropcontact + Hunter + Datagma + BetterContact). Used by the two-pass
+    strategy in run_campaign to spend paid credits only on high-value leads.
     """
     full_name = f"{person_first} {person_last}".strip()
     website = partial.get("website") or ""
@@ -598,8 +691,12 @@ def finalize_lead(
     # We stop early once we have both email AND mobile (no need to spend more
     # credits if we got everything). Each source has its own free tier so the
     # default config is "all-free, cumulative coverage".
+    #
+    # Two-pass gate: when use_paid_sources=False, skip the entire waterfall.
+    # run_campaign sets this based on a preliminary_score(partial) check —
+    # leads scoring < threshold don't get paid enrichment, saving credits.
     dc_result = None
-    if have_dropcontact_key() and person_first and person_last:
+    if use_paid_sources and have_dropcontact_key() and person_first and person_last:
         @_cached("dropcontact", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
         def _dc():
             try:
@@ -621,7 +718,7 @@ def finalize_lead(
 
     # 2nd source: Hunter (50 free credits/mo) — try when we don't have an
     # email yet AND we have a website domain to query.
-    if not waterfall_email and have_hunter_key() and partial.get("website") and person_first and person_last:
+    if use_paid_sources and not waterfall_email and have_hunter_key() and partial.get("website") and person_first and person_last:
         from urllib.parse import urlparse as _urlp
         host = (_urlp(partial["website"]).hostname or "").lower().removeprefix("www.")
         if host:
@@ -636,9 +733,17 @@ def finalize_lead(
                 waterfall_email = h["email"]
                 waterfall_sources.append(f"hunter(score={h.get('score')})")
 
+    # SHORT-CIRCUIT: if we already have email + mobile + LinkedIn from
+    # Dropcontact + Hunter, no need to spend Datagma (expensive: 30 credits
+    # per mobile lookup) or BetterContact (slow: 30s polling).
+    waterfall_good_enough = bool(
+        waterfall_email and waterfall_phone and waterfall_linkedin
+    )
+
     # 3rd source: Datagma (50 free credits + 160 API matches) — French
-    # specialist. Try when we still need email OR mobile.
-    if (not waterfall_email or not waterfall_phone) and have_datagma_key() and person_first and person_last:
+    # specialist. Try when we still need email OR mobile AND we don't already
+    # have the full set.
+    if use_paid_sources and not waterfall_good_enough and (not waterfall_email or not waterfall_phone) and have_datagma_key() and person_first and person_last:
         @_cached("datagma", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
         def _dg():
             try:
@@ -658,10 +763,16 @@ def finalize_lead(
         if dg.get("linkedin") and not waterfall_linkedin:
             waterfall_linkedin = dg["linkedin"]
 
+    # Re-check after Datagma: maybe we're now good enough.
+    waterfall_good_enough = bool(
+        waterfall_email and waterfall_phone and waterfall_linkedin
+    )
+
     # 4th source: BetterContact (50 free credits, PAY-PER-VALID, 20+ providers).
-    # Last resort because the polling is slow (~30s). Only fires if we still
-    # need email OR mobile after Dropcontact/Hunter/Datagma all failed.
-    if (not waterfall_email or not waterfall_phone) and have_bettercontact_key() and person_first and person_last:
+    # Last resort because the polling is slow (~30s). Skip entirely when we
+    # have a "good enough" set or when we have just email+phone (no need to
+    # pay the BC poll for marginal upside).
+    if use_paid_sources and not waterfall_good_enough and (not waterfall_email or not waterfall_phone) and have_bettercontact_key() and person_first and person_last:
         from urllib.parse import urlparse as _urlp
         host = ""
         if partial.get("website"):
@@ -1064,6 +1175,8 @@ def finalize_lead(
         cuisine_type=partial.get("cuisine_type"),
         gmb_rating=partial.get("gmb_rating"),
         gmb_rating_count=partial.get("gmb_rating_count"),
+        is_operating=partial.get("is_operating"),
+        permanently_closed=partial.get("permanently_closed"),
         company_linkedin=ScoredField(**partial["company_linkedin"]),
         company_instagram=ScoredField(**partial["company_instagram"]),
         company_phone=company_phone_field,

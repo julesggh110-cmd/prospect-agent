@@ -96,6 +96,7 @@ def run(
     generate_emails: bool = False,
     sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
     sender_company: str = "Bear Brothers",
+    paid_threshold: int = 40,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -198,7 +199,16 @@ def run(
     # lead (LinkedIn search, Insta search, Dropcontact poll, mobile finder,
     # SMTP) — running them in parallel collapses the wall-clock time from
     # N × (slowest_per_lead) to roughly (slowest_per_lead).
+    #
+    # TWO-PASS strategy: compute a preliminary_score from the FREE-tier data
+    # already in `partial`. Leads scoring below paid_threshold (default 40)
+    # get the cheap path (no Dropcontact/Hunter/Datagma/BC) — saves credits
+    # on low-quality leads we'd probably drop anyway.
+    from pipeline import preliminary_score
     finalize_args = []
+    prelim_scores: list[tuple[int, str]] = []
+    n_paid = 0
+    n_cheap = 0
     for p in partials:
         dirs = p.get("legal_dirigeants") or []
         if not dirs:
@@ -234,33 +244,47 @@ def run(
                 chosen_last = chosen_last or parts[-1]
             chosen_role = persona_role_hint or d.get("role") or ""
 
-        finalize_args.append((p, chosen_first, chosen_last, chosen_role, chosen_sources))
+        prelim = preliminary_score(p)
+        prelim_scores.append((prelim, p["company_name"]))
+        use_paid = prelim >= paid_threshold
+        if use_paid:
+            n_paid += 1
+        else:
+            n_cheap += 1
+        finalize_args.append((p, chosen_first, chosen_last, chosen_role, chosen_sources, use_paid))
+
+    if paid_threshold > 0 and (n_paid + n_cheap) > 0:
+        print(f"[Two-pass] {n_paid}/{n_paid + n_cheap} leads above paid threshold "
+              f"(>={paid_threshold}) → will hit paid waterfall; "
+              f"{n_cheap} get cheap pass only.")
 
     # PRE-FETCH Dropcontact in ONE batch (10× faster than per-lead polling).
     # We then prime the diskcache so the parallel finalize_lead workers find
     # their result instantly without re-calling the API.
+    # TWO-PASS: only batch leads that qualified for paid enrichment.
     try:
         from dropcontact_client import enrich_batch, have_dropcontact_key
-        if have_dropcontact_key() and finalize_args:
-            print(f"[Dropcontact] batch-enriching {len(finalize_args)} leads…")
+        paid_args = [a for a in finalize_args if a[5]]   # a[5] = use_paid
+        if have_dropcontact_key() and paid_args:
+            print(f"[Dropcontact] batch-enriching {len(paid_args)} paid-tier leads "
+                  f"(skipped {len(finalize_args) - len(paid_args)} cheap-only)…")
             batch_rows = [
                 {"first": f, "last": l, "company": p.get("company_name", ""),
                  "website": p.get("website")}
-                for (p, f, l, r, srcs) in finalize_args
+                for (p, f, l, r, srcs, _up) in paid_args
             ]
             batch_result = enrich_batch(batch_rows)
-            # Prime the diskcache that finalize_lead reads from
             try:
                 from pipeline import _CACHE, _CACHE_TTL
                 if _CACHE is not None:
-                    for (p, f, l, r, srcs) in finalize_args:
+                    for (p, f, l, r, srcs, _up) in paid_args:
                         key = f"dropcontact:{f}|{l}|{p.get('company_name', '')}"
                         lookup_key = (f.lower(), l.lower(),
                                        p.get("company_name", "").lower())
                         result = batch_result.get(lookup_key)
                         if result is not None:
                             _CACHE.set(key, result, expire=_CACHE_TTL)
-                print(f"[Dropcontact] {sum(1 for v in batch_result.values() if v.get('email') or v.get('phone'))}/{len(finalize_args)} returned data")
+                print(f"[Dropcontact] {sum(1 for v in batch_result.values() if v.get('email') or v.get('phone'))}/{len(paid_args)} returned data")
             except Exception:
                 pass
     except Exception as e:
@@ -272,9 +296,10 @@ def run(
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
     def _one(args):
-        p, f, l, r, srcs = args
+        p, f, l, r, srcs, use_paid = args
         return finalize_lead(p, person_first=f, person_last=l,
-                             person_role=r, person_sources=srcs)
+                             person_role=r, person_sources=srcs,
+                             use_paid_sources=use_paid)
 
     with _TPE(max_workers=max_workers) as exe:
         for lead in exe.map(_one, finalize_args):
@@ -425,6 +450,12 @@ def _cli() -> None:
     p.add_argument("--daily-cap", type=int, default=None,
                    help="Set the daily lead cap before running. Equivalent to "
                         "`python quotas.py set-cap N`. Use 0 to disable.")
+    p.add_argument("--paid-threshold", type=int, default=40,
+                   help="Two-pass strategy: leads with preliminary_score below "
+                        "this don't get the paid waterfall (Dropcontact, "
+                        "Hunter, Datagma, BetterContact). 0 = always pay. "
+                        "Default 40 = skip the bottom ~30%% which we'd drop "
+                        "anyway. Saves ~50%% paid credits.")
     p.add_argument("--quotas", action="store_true",
                    help="Print the current quota status and exit (no campaign).")
     p.add_argument("--generate-emails", action="store_true",
@@ -490,6 +521,7 @@ def _cli() -> None:
         generate_emails=args.generate_emails,
         sender_offer=args.sender_offer,
         sender_company=args.sender_company,
+        paid_threshold=args.paid_threshold,
     )
 
 

@@ -229,9 +229,16 @@ def find_business_place(
 
 
 def normalize_place(place: dict) -> dict:
-    """Flatten the Serper response into the keys we actually use downstream."""
+    """Flatten the Serper response + compute operational signals."""
     if not place:
         return {}
+    # Operational signals — used by ICP to drop dead/inactive businesses.
+    # Serper /places returns a `permanently_closed` bool when Google flags it.
+    perm_closed = bool(place.get("permanentlyClosed") or place.get("permanently_closed"))
+    temp_closed = bool(place.get("temporarilyClosed") or place.get("temporarily_closed"))
+    # "Is operating" defaults to True unless Google says otherwise. Also flag
+    # businesses with zero reviews as suspicious (could be a stale listing).
+    is_operating = not (perm_closed or temp_closed)
     return {
         "name": place.get("title"),
         "address": place.get("address"),
@@ -245,6 +252,11 @@ def normalize_place(place: dict) -> dict:
         "longitude": place.get("longitude"),
         "cid": place.get("cid"),
         "place_id": place.get("placeId"),
+        # Operational signals (Bear Brothers ICP uses these)
+        "opening_hours": place.get("openingHours") or place.get("hours"),
+        "permanently_closed": perm_closed,
+        "temporarily_closed": temp_closed,
+        "is_operating": is_operating,
         "source": "google_places",
     }
 

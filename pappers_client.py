@@ -99,6 +99,39 @@ class PappersClient:
         except (httpx.HTTPError, ValueError):
             return None
 
+    def get_by_siret(self, siret: str) -> Optional[dict]:
+        """Fetch the LOCAL establishment data by SIRET (14 digits).
+
+        For chains and groups (e.g. McDo Toulouse Capitole), Sirene's SIREN
+        points to the chain HQ but the SIRET points to the specific local
+        outlet. Querying Pappers by SIRET gives us:
+          - the local address (not HQ)
+          - the local phone (if published)
+          - the local establishment status
+
+        Cost: 1 Pappers credit (same as get_by_siren).
+        Returns a dict (raw API response) — different shape than the SIREN
+        endpoint, so we don't force-validate against PappersCompany.
+        """
+        if not siret or len(siret) != 14:
+            return None
+        try:
+            resp = self._client.get(
+                "/etablissement",
+                params={"siret": siret, "api_token": self.api_key},
+            )
+            if resp.status_code == 404:
+                return None
+            resp.raise_for_status()
+            try:
+                from quotas import mark_used
+                mark_used("pappers")
+            except Exception:
+                pass
+            return resp.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
     def close(self) -> None:
         self._client.close()
 

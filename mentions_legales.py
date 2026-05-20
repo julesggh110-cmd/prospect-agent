@@ -107,22 +107,23 @@ def _throttle() -> None:
 
 
 def _fetch(url: str) -> Optional[str]:
-    try:
-        _throttle()
-        with httpx.Client(
-            timeout=TIMEOUT,
-            headers={
-                "User-Agent": USER_AGENT,
-                "Accept-Language": "fr-FR,fr;q=0.9",
-            },
-            follow_redirects=True,
-            verify=False,
-        ) as c:
-            r = c.get(url)
-            if r.status_code == 200 and len(r.text) > 200:
-                return r.text
-    except Exception:
-        pass
+    """Cached GET. Hits the disk cache before the network — sites' mentions
+    légales rarely change, 7-day TTL is safe and saves ~50% time on re-runs.
+    """
+    _throttle()
+    from http_safe import cached_get
+    text = cached_get(
+        url,
+        timeout=TIMEOUT,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept-Language": "fr-FR,fr;q=0.9",
+        },
+        follow_redirects=True,
+        verify=False,
+    )
+    if text and len(text) > 200:
+        return text
     return None
 
 

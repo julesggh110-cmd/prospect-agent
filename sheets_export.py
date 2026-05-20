@@ -39,6 +39,7 @@ HEADERS = [
     "company_name", "company_siren", "company_naf_label",
     "cuisine_type",       # Google My Business category — key ICP qualifier
     "gmb_rating", "gmb_rating_count",  # rating + review count = premium signal
+    "is_operating",       # False if permanently_closed per GMB → drop signal
     "company_city", "company_address", "company_size", "company_website",
     "company_email",      # generic shared inbox (contact@, info@) — NOT the person
     "company_phone", "company_phone_conf",
@@ -83,6 +84,8 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         getattr(lead, "cuisine_type", "") or "",
         getattr(lead, "gmb_rating", "") or "",
         getattr(lead, "gmb_rating_count", "") or "",
+        ("CLOSED" if getattr(lead, "permanently_closed", False)
+            else ("yes" if getattr(lead, "is_operating", None) is True else "")),
         lead.company_city or "",
         lead.company_address or "",
         lead.company_size or "",

@@ -87,6 +87,9 @@ class Lead(BaseModel):
     cuisine_type: Optional[str] = None
     gmb_rating: Optional[float] = None
     gmb_rating_count: Optional[int] = None
+    # Operational state (from GMB) — drop "Définitivement fermé" leads
+    is_operating: Optional[bool] = None
+    permanently_closed: Optional[bool] = None
     company_linkedin: ScoredField = Field(default_factory=ScoredField.missing)
     company_instagram: ScoredField = Field(default_factory=ScoredField.missing)
     company_facebook: Optional[str] = None
@@ -135,7 +138,14 @@ class Lead(BaseModel):
         lower the contact threshold to 30. SMB-mode also tolerates "address +
         name only" leads: even without a contact channel, the salesperson can
         knock on the door / cold mail to the postal address.
+
+        Hard drop: business permanently_closed per Google My Business. No
+        point spending cold-email credits on a defunct restaurant.
         """
+        if self.permanently_closed:
+            self.dropped = True
+            self.drop_reason = "permanently closed (Google My Business)"
+            return
         self.compute_overall()
         SMB_SIZES = {"00", "01", "02", "03", "11", "12", ""}
         is_smb = (self.company_size or "") in SMB_SIZES
