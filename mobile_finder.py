@@ -39,7 +39,11 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-TIMEOUT = 8.0
+TIMEOUT = 5.0   # was 8.0 — speed > completeness on this best-effort finder
+
+# Hard ceiling on TOTAL wall-time per call. Past this we bail with no result
+# rather than blocking the parallel finalize phase indefinitely.
+_MAX_TOTAL_S = 12.0
 
 # FR mobile only: 06 XX XX XX XX or 07 XX XX XX XX (with optional separators)
 # Also accept +33 6 / +33 7 international format.
@@ -276,28 +280,36 @@ def find_mobile_for_person(
 ) -> Optional[tuple[str, str]]:
     """Try the 4 free techniques in sequence. Returns (formatted_mobile, source) or None.
 
-    Stop on first valid mobile found. Each technique takes 1-5s; in the worst
-    case (all 4 attempted with no luck) the whole call is ~15-25s.
+    Stop on first valid mobile found OR _MAX_TOTAL_S seconds elapsed. Without
+    the wall-time cap, this used to block the parallel finalize phase for
+    15-25 s/lead — too slow for batch campaigns.
     """
     if not first or not last:
         return None
 
-    if website:
+    started = time.monotonic()
+    def _budget_left() -> bool:
+        return (time.monotonic() - started) < _MAX_TOTAL_S
+
+    if website and _budget_left():
         m = _tech1_press_pages(first, last, website)
         if m:
             return m, "press-pages-on-website"
 
-    m = _tech2_calendly(first, last)
-    if m:
-        return m, "calendly"
+    if _budget_left():
+        m = _tech2_calendly(first, last)
+        if m:
+            return m, "calendly"
 
-    m = _tech3_press_search(first, last, company)
-    if m:
-        return m, "press-search"
+    if _budget_left():
+        m = _tech3_press_search(first, last, company)
+        if m:
+            return m, "press-search"
 
-    m = _tech4_personal_site(first, last, company)
-    if m:
-        return m, "personal-site"
+    if _budget_left():
+        m = _tech4_personal_site(first, last, company)
+        if m:
+            return m, "personal-site"
 
     return None
 

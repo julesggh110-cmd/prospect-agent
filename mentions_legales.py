@@ -278,7 +278,9 @@ def extract_legal_contacts(website: str) -> dict:
     # Step 2: also try standard paths
     for path in _LEGAL_PATHS:
         candidate_urls.append(urljoin(website, path))
-    candidate_urls = list(dict.fromkeys(candidate_urls))[:10]
+    # Cap at 4 candidates (was 10) — past 4 we're scraping deep into
+    # non-existent paths, wasting 4-6s per lead.
+    candidate_urls = list(dict.fromkeys(candidate_urls))[:4]
 
     # Step 3: scan each candidate until we find a Mentions Légales page
     for url in candidate_urls:

@@ -165,16 +165,21 @@ def run(
     else:
         new_sirens = set(sirens) - already_seen_sirens(sirens)
 
+    # Build the (partial, person_first, person_last, role, sources) tuples
+    # FIRST (no I/O), then dispatch them all to a thread pool. This is the
+    # single biggest speedup: finalize_lead does many slow network calls per
+    # lead (LinkedIn search, Insta search, Dropcontact poll, mobile finder,
+    # SMTP) — running them in parallel collapses the wall-clock time from
+    # N × (slowest_per_lead) to roughly (slowest_per_lead).
+    finalize_args = []
     for p in partials:
         dirs = p.get("legal_dirigeants") or []
         if not dirs:
             continue
 
-        # Default: take the first legal director.
         chosen_first, chosen_last, chosen_role = None, None, None
         chosen_sources = ["sirene"]
 
-        # Optional: LLM-driven decision-maker pick (great for big companies)
         if llm_decider:
             from decision_maker_llm import pick as llm_pick
             decision = llm_pick(
@@ -190,8 +195,6 @@ def run(
                 chosen_role = decision.get("person_role") or persona_role_hint or ""
                 chosen_sources = decision.get("person_sources") or ["sirene", "llm-decider"]
 
-        # Fallback: first legal dirigeant — prefer the cleaned first/last from
-        # name_utils (handles 'DIDIER JACQUES EMMANUEL YVON VILLEMEY' → 'Didier'/'Villemey').
         if not chosen_first or not chosen_last:
             d = dirs[0]
             chosen_first = d.get("first") or ""
@@ -204,15 +207,52 @@ def run(
                 chosen_last = chosen_last or parts[-1]
             chosen_role = persona_role_hint or d.get("role") or ""
 
-        lead = finalize_lead(
-            p,
-            person_first=chosen_first,
-            person_last=chosen_last,
-            person_role=chosen_role,
-            person_sources=chosen_sources,
-        )
-        setattr(lead, "is_new_lead", lead.company_siren in new_sirens)
-        leads.append(lead)
+        finalize_args.append((p, chosen_first, chosen_last, chosen_role, chosen_sources))
+
+    # PRE-FETCH Dropcontact in ONE batch (10× faster than per-lead polling).
+    # We then prime the diskcache so the parallel finalize_lead workers find
+    # their result instantly without re-calling the API.
+    try:
+        from dropcontact_client import enrich_batch, have_dropcontact_key
+        if have_dropcontact_key() and finalize_args:
+            print(f"[Dropcontact] batch-enriching {len(finalize_args)} leads…")
+            batch_rows = [
+                {"first": f, "last": l, "company": p.get("company_name", ""),
+                 "website": p.get("website")}
+                for (p, f, l, r, srcs) in finalize_args
+            ]
+            batch_result = enrich_batch(batch_rows)
+            # Prime the diskcache that finalize_lead reads from
+            try:
+                from pipeline import _CACHE, _CACHE_TTL
+                if _CACHE is not None:
+                    for (p, f, l, r, srcs) in finalize_args:
+                        key = f"dropcontact:{f}|{l}|{p.get('company_name', '')}"
+                        lookup_key = (f.lower(), l.lower(),
+                                       p.get("company_name", "").lower())
+                        result = batch_result.get(lookup_key)
+                        if result is not None:
+                            _CACHE.set(key, result, expire=_CACHE_TTL)
+                print(f"[Dropcontact] {sum(1 for v in batch_result.values() if v.get('email') or v.get('phone'))}/{len(finalize_args)} returned data")
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[Dropcontact] batch failed ({e}); falling back to per-lead calls")
+
+    # Parallel finalize. We use the same worker count as the partial phase
+    # since the rate-limited APIs (Brave, Serper, OSM, Dropcontact) all have
+    # thread-safe Throttle() locks that serialize correctly under concurrency.
+    from concurrent.futures import ThreadPoolExecutor as _TPE
+
+    def _one(args):
+        p, f, l, r, srcs = args
+        return finalize_lead(p, person_first=f, person_last=l,
+                             person_role=r, person_sources=srcs)
+
+    with _TPE(max_workers=max_workers) as exe:
+        for lead in exe.map(_one, finalize_args):
+            setattr(lead, "is_new_lead", lead.company_siren in new_sirens)
+            leads.append(lead)
 
     # 3a-bis. Self-critique multi-pass: retry dropped leads with relaxed thresholds.
     if retry_dropped:

@@ -48,8 +48,9 @@ DEFAULT_TIMEOUT = 15.0
 # Polite throttle — Dropcontact processes async so we mostly wait on polling.
 _MIN_INTERVAL_S = 0.3
 _LAST_AT = 0.0
-# Polling: status takes a few seconds to flip to "done". Wait at most 60s.
-_POLL_INTERVAL_S = 4.0
+# Polling: shorter interval = faster turnaround, especially in batch mode
+# where many leads finish on the SAME poll. Dropcontact tolerates ~30 polls/min.
+_POLL_INTERVAL_S = 1.5
 _MAX_POLL_S = 60.0
 
 
@@ -205,6 +206,90 @@ def enrich_person(
         ),
         "source": "dropcontact",
     }
+
+
+def enrich_batch(
+    rows: list[dict],
+) -> dict[tuple[str, str, str], dict]:
+    """Enrich up to ~250 contacts in a SINGLE Dropcontact API call.
+
+    Each row must have keys: 'first', 'last', 'company', and optionally 'website'.
+    Returns a dict keyed by (first.lower(), last.lower(), company.lower()) pointing
+    to the same flat result shape as enrich_person().
+
+    Why batch matters: the polling phase (~10-30s of wall-time per request)
+    is amortised across ALL leads. Sequential: 10 leads × 20s polling = 200s.
+    Batch:      10 leads × 1 submit + 1 poll = ~20s total. **10× speedup**
+    on a 10-lead campaign.
+
+    Dropcontact API supports up to 250 rows per batch (per their docs).
+    """
+    if not have_dropcontact_key() or not rows:
+        return {}
+
+    # Build API rows + remember the lookup key for each
+    api_rows: list[dict] = []
+    keys: list[tuple[str, str, str]] = []
+    for r in rows:
+        first = (r.get("first") or "").strip()
+        last = (r.get("last") or "").strip()
+        company = (r.get("company") or "").strip()
+        if not first or not last or not company:
+            continue
+        row: dict = {"first_name": first, "last_name": last, "company": company}
+        if r.get("website"):
+            row["website"] = r["website"]
+        api_rows.append(row)
+        keys.append((first.lower(), last.lower(), company.lower()))
+
+    if not api_rows:
+        return {}
+
+    rid = _submit_batch(api_rows)
+    if not rid:
+        return {}
+    data = _poll_until_done(rid)
+    if not data:
+        return {}
+
+    items = data.get("data") or []
+    out: dict[tuple[str, str, str], dict] = {}
+    for k, item in zip(keys, items):
+        # Reuse the same parser as enrich_person()
+        emails = item.get("email") or []
+        primary_email: Optional[str] = None
+        email_qual: Optional[str] = None
+        if emails and isinstance(emails, list):
+            nominative = [e for e in emails if (e.get("qualification") or "").startswith("nominative")]
+            chosen = (nominative or emails)[0]
+            primary_email = (chosen.get("email") or "").lower() or None
+            email_qual = chosen.get("qualification")
+        phone: Optional[str] = None
+        phones = item.get("phone") or []
+        if isinstance(phones, list) and phones:
+            first_phone = phones[0]
+            if isinstance(first_phone, dict):
+                phone = first_phone.get("number") or first_phone.get("phone")
+            else:
+                phone = str(first_phone)
+        elif isinstance(phones, str):
+            phone = phones
+        out[k] = {
+            "email": primary_email,
+            "email_qualification": email_qual,
+            "phone": phone,
+            "linkedin": item.get("linkedin"),
+            "company_website": item.get("website"),
+            "company_siren": item.get("siren"),
+            "company_phone": item.get("company_phone"),
+            "company_email": (
+                (item.get("company_email") or [{}])[0].get("email")
+                if isinstance(item.get("company_email"), list)
+                else None
+            ),
+            "source": "dropcontact",
+        }
+    return out
 
 
 def _cli() -> None:

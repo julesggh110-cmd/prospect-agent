@@ -279,7 +279,7 @@ def guess_website(
     *,
     city: Optional[str] = None,
     sector_hint: Optional[str] = None,
-    max_attempts: int = 14,
+    max_attempts: int = 6,
 ) -> Optional[str]:
     """Try a handful of obvious .fr/.com domains for `name`.
 

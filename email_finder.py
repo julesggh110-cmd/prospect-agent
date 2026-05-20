@@ -29,8 +29,8 @@ import dns.resolver
 from email_validator import EmailNotValidError, validate_email
 
 PROBE_SENDER = "verify@example.com"
-DNS_TIMEOUT_S = 5.0
-SMTP_TIMEOUT_S = 8.0
+DNS_TIMEOUT_S = 4.0
+SMTP_TIMEOUT_S = 5.0  # was 8.0 — most SMTP servers respond in <2s; cap noise
 
 
 # ---------------------------------------------------------------------------

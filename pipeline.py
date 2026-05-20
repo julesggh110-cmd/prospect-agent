@@ -720,7 +720,9 @@ def finalize_lead(
         )
 
     # 3b. Free Mobile Finder — fallback if mentions_legales didn't give a phone.
-    if not person_phone_field.value:
+    # Skip entirely when Dropcontact already returned a phone (we save 10-15s
+    # of sequential scraping per lead).
+    if not person_phone_field.value and not (dc_result and dc_result.get("phone")):
         try:
             from mobile_finder import find_mobile_for_person
             @_cached("mobile", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
