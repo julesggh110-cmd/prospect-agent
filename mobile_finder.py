@@ -56,18 +56,14 @@ PRESS_HINTS = (
     "contact-presse", "press-contact", "contact-media",
 )
 
-# Rate limit our requests politely
-_LAST_AT = 0.0
-_MIN_INTERVAL = 1.0
+# Thread-safe rate limit (was racy with parallel enrichment).
+from http_safe import Throttle  # noqa: E402
+
+_THROTTLE = Throttle(min_interval_s=1.0)
 
 
 def _throttle() -> None:
-    global _LAST_AT
-    now = time.monotonic()
-    delta = now - _LAST_AT
-    if delta < _MIN_INTERVAL:
-        time.sleep(_MIN_INTERVAL - delta)
-    _LAST_AT = time.monotonic()
+    _THROTTLE.acquire()
 
 
 def _fetch(url: str) -> Optional[str]:

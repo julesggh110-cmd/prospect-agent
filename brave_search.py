@@ -22,18 +22,16 @@ import httpx
 
 API_URL = "https://api.search.brave.com/res/v1/web/search"
 DEFAULT_TIMEOUT = 10.0
-# Free tier = 1 req/sec. Pad slightly to stay safely under.
-_MIN_INTERVAL_S = 1.05
-_LAST_AT = 0.0
+
+from http_safe import Throttle  # noqa: E402
+
+# Free tier = 1 req/sec. Pad slightly to stay safely under. Thread-safe so
+# parallel workers in pipeline.enrich_companies_parallel don't double up.
+_THROTTLE = Throttle(min_interval_s=1.05)
 
 
 def _throttle() -> None:
-    global _LAST_AT
-    now = time.monotonic()
-    delta = now - _LAST_AT
-    if delta < _MIN_INTERVAL_S:
-        time.sleep(_MIN_INTERVAL_S - delta)
-    _LAST_AT = time.monotonic()
+    _THROTTLE.acquire()
 
 
 class BraveSearch:

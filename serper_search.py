@@ -25,18 +25,16 @@ import httpx
 
 API_URL = "https://google.serper.dev/search"
 DEFAULT_TIMEOUT = 10.0
+
+from http_safe import Throttle  # noqa: E402
+
 # Serper has no documented per-second rate limit; pad lightly to be polite.
-_MIN_INTERVAL_S = 0.2
-_LAST_AT = 0.0
+# Thread-safe so parallel workers don't burst.
+_THROTTLE = Throttle(min_interval_s=0.2)
 
 
 def _throttle() -> None:
-    global _LAST_AT
-    now = time.monotonic()
-    delta = now - _LAST_AT
-    if delta < _MIN_INTERVAL_S:
-        time.sleep(_MIN_INTERVAL_S - delta)
-    _LAST_AT = time.monotonic()
+    _THROTTLE.acquire()
 
 
 class SerperSearch:

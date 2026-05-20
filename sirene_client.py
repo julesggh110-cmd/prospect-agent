@@ -229,6 +229,58 @@ class SireneClient:
 
         return SearchResponse.model_validate(data)
 
+    def search_many(
+        self,
+        *,
+        target: int,
+        query: Optional[str] = None,
+        naf: Optional[str] = None,
+        code_postal: Optional[str] = None,
+        departement: Optional[str] = None,
+        region: Optional[str] = None,
+        tranche_effectif: Optional[str] = None,
+        local_only: bool = True,
+        max_pages: int = 20,
+    ) -> SearchResponse:
+        """Paginated search — keeps fetching until `target` results are gathered
+        OR the API runs out of pages.
+
+        Why this exists: a single Sirene page caps at 25 results. Asking for
+        `--volume 100` previously gave you 25 because `run_campaign` was calling
+        `search(per_page=min(volume, 25))` and not iterating. This method does
+        the iteration in one place, returning a SearchResponse whose `results`
+        list holds up to `target` companies (truncated at the target).
+
+        `max_pages` is a hard safety net — at per_page=25 that's 500 results.
+        Sirene's free API tolerates this without rate-limiting in practice.
+        """
+        per_page = 25
+        results: list = []
+        merged: Optional[SearchResponse] = None
+        for page in range(1, max_pages + 1):
+            resp = self.search(
+                query=query, naf=naf,
+                code_postal=code_postal, departement=departement, region=region,
+                tranche_effectif=tranche_effectif,
+                page=page, per_page=per_page,
+                local_only=local_only,
+            )
+            if merged is None:
+                merged = resp
+            results.extend(resp.results)
+            if len(results) >= target:
+                results = results[:target]
+                break
+            if page >= resp.total_pages or not resp.results:
+                break
+        if merged is None:
+            return SearchResponse(results=[], total_results=0,
+                                   page=1, per_page=per_page, total_pages=0)
+        # Return a SearchResponse with the merged results — keep the original
+        # total_results / total_pages from page 1 for visibility.
+        merged.results = results
+        return merged
+
     def close(self) -> None:
         self._client.close()
 

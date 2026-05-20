@@ -1,0 +1,40 @@
+# Build artifacts / caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.venv/
+venv/
+
+# Local data & outputs (mount as volumes at runtime instead)
+data/
+output/
+
+# Secrets
+.env
+.env.local
+*.secret
+credentials.json
+token.json
+
+# Dev tooling
+.git/
+.github/
+.vscode/
+.idea/
+*.swp
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Bench/reports (not needed at runtime)
+benchmark/bench-*.md
+benchmark/golden_truth.csv
+
+# One-off scripts that are NOT the main CLI
+scripts/

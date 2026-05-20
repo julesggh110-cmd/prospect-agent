@@ -1,0 +1,111 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prospect-agent"
+version = "0.9.0"
+description = "Verified B2B prospect lists from natural-language requests. FR-focused, triangulated, never invents data."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [
+    { name = "Jules", email = "serny1@hotmail.fr" }
+]
+keywords = ["prospection", "b2b", "leads", "sirene", "france", "outreach"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+]
+
+# Pinned dependency versions — bumping a major (e.g. Pydantic 2 → 3) is a
+# breaking change and must be explicit. Lower bound is what we've actually
+# tested against; upper bound caps the next major to prevent silent breakage.
+dependencies = [
+    # HTTP — async-capable client, used everywhere
+    "httpx>=0.28,<0.30",
+    # Data validation — the whole Lead model rides on Pydantic 2
+    "pydantic>=2.10,<3",
+    # Env loading
+    "python-dotenv>=1.0,<2",
+    # CLI output
+    "rich>=14.0,<15",
+    # LLM cold-email generation (optional at runtime)
+    "anthropic>=0.40,<1",
+    # HTML parsing — much faster than BeautifulSoup for our use
+    "selectolax>=0.4,<0.5",
+    # DNS lookups for MX records (email verification)
+    "dnspython>=2.7,<3",
+    # RFC-5321 email syntax validation
+    "email-validator>=2.2,<3",
+    # DuckDuckGo fallback search
+    "ddgs>=9.0,<10",
+    # Domain parsing — public-suffix-aware
+    "tldextract>=5.0,<6",
+    # Google Sheets export (optional but bundled)
+    "gspread>=6.0,<7",
+    "google-auth>=2.40,<3",
+    "google-auth-oauthlib>=1.2,<2",
+    "google-auth-httplib2>=0.2,<1",
+    # Disk-backed cache for slow lookups
+    "diskcache>=5.6,<6",
+    # XLSX writer (premium-formatted exports)
+    "openpyxl>=3.1,<4",
+    # HubSpot CRM sync (optional)
+    "hubspot-api-client>=12.0,<14",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+# Single-command entry point for distribution
+prospect-agent = "run_campaign:_cli"
+
+[project.urls]
+Homepage = "https://github.com/julesggh110-cmd/prospect-agent"
+Repository = "https://github.com/julesggh110-cmd/prospect-agent"
+Issues = "https://github.com/julesggh110-cmd/prospect-agent/issues"
+
+# Package layout: flat (no src/) because this is also a Multica skill where
+# individual .py modules are read directly. The setuptools auto-discovery
+# below picks up only the runtime modules and excludes scripts/, output/,
+# data/, tests/, docs/, and the benchmark/ harness.
+[tool.setuptools]
+py-modules = [
+    "brave_search",
+    "cold_email",
+    "decision_maker_llm",
+    "domain_guess",
+    "dropcontact_client",
+    "email_finder",
+    "google_cse",
+    "hubspot_client",
+    "icp",
+    "lead_store",
+    "mentions_legales",
+    "mobile_finder",
+    "name_utils",
+    "osm_finder",
+    "pagesjaunes_client",
+    "pappers_client",
+    "pipeline",
+    "research_urls",
+    "run_campaign",
+    "serper_search",
+    "setup_wizard",
+    "sheets_export",
+    "sirene_client",
+    "social_finder",
+    "triangulation",
+    "web_enrichment",
+    "website_finder",
+]

@@ -143,8 +143,52 @@ def _lookup_mx(domain: str) -> list[str]:
         return []
 
 
+# Port-25-egress probe — many cloud VPS (AWS, GCP, OVH, etc.) block outbound
+# port 25 by default. Without this, every SMTP probe silently times out and
+# we return zero verified emails — the user thinks the agent is broken.
+# We test once per process and remember the result.
+_SMTP_AVAILABLE: Optional[bool] = None
+
+
+def _is_smtp_outbound_open() -> bool:
+    """One-shot check: can we open a TCP connection to a well-known SMTP MX?
+
+    We test against gmail-smtp-in.l.google.com:25 with a 3s timeout. If it
+    fails, we're on a host where port 25 is blocked → mark all subsequent
+    SMTP probes as unreachable so the pipeline can fall back to pattern-only
+    detection or Dropcontact's verified emails.
+    """
+    global _SMTP_AVAILABLE
+    if _SMTP_AVAILABLE is not None:
+        return _SMTP_AVAILABLE
+    try:
+        with socket.create_connection(
+            ("gmail-smtp-in.l.google.com", 25), timeout=3.0
+        ) as s:
+            # Drain a banner to be sure the conversation works
+            try:
+                s.recv(64)
+            except (socket.timeout, OSError):
+                pass
+        _SMTP_AVAILABLE = True
+    except (socket.timeout, ConnectionError, OSError):
+        _SMTP_AVAILABLE = False
+    return _SMTP_AVAILABLE
+
+
+def smtp_outbound_available() -> bool:
+    """Public accessor — lets callers (pipeline, run_campaign) print a warning."""
+    return _is_smtp_outbound_open()
+
+
 def _smtp_probe(mx: str, sender: str, recipient: str) -> tuple[Optional[int], Optional[str]]:
-    """Attempt EHLO/MAIL FROM/RCPT TO against `mx`. Return (code, message)."""
+    """Attempt EHLO/MAIL FROM/RCPT TO against `mx`. Return (code, message).
+
+    Short-circuits with (None, "port-25-blocked") if a startup check has
+    proven the host can't open outbound 25. Avoids wasted timeouts at scale.
+    """
+    if not _is_smtp_outbound_open():
+        return None, "port-25-blocked"
     try:
         with smtplib.SMTP(timeout=SMTP_TIMEOUT_S) as s:
             s.connect(mx, 25)
@@ -215,6 +259,21 @@ def find_best_email(first: str, last: str, domain: str) -> tuple[Optional[EmailC
     candidates = generate_email_patterns(first, last, domain)
     if not candidates:
         return None, []
+
+    # If outbound SMTP is blocked, we CAN'T verify anything. Return the
+    # most-likely pattern with a low-confidence "pattern-guess" marker so the
+    # pipeline can show it to the user with a clear caveat instead of leaving
+    # the email field completely empty.
+    if not _is_smtp_outbound_open():
+        pattern_only = EmailCheck(
+            email=candidates[0],
+            syntax_ok=True,
+            mx_records=[],
+            smtp_code=None,
+            smtp_message="port-25-blocked: not verified",
+            catch_all=None,
+        )
+        return pattern_only, [pattern_only]
 
     checks: list[EmailCheck] = []
     best: Optional[EmailCheck] = None

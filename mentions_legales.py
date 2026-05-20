@@ -96,17 +96,14 @@ _RCS_RX = re.compile(
     re.IGNORECASE,
 )
 
-_LAST_AT = 0.0
-_MIN_INTERVAL = 0.6
+from http_safe import Throttle  # noqa: E402
+
+# Thread-safe throttle (we hit SMB websites — being polite to small servers).
+_THROTTLE = Throttle(min_interval_s=0.6)
 
 
 def _throttle() -> None:
-    global _LAST_AT
-    now = time.monotonic()
-    delta = now - _LAST_AT
-    if delta < _MIN_INTERVAL:
-        time.sleep(_MIN_INTERVAL - delta)
-    _LAST_AT = time.monotonic()
+    _THROTTLE.acquire()
 
 
 def _fetch(url: str) -> Optional[str]:

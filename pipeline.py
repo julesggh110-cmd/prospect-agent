@@ -521,27 +521,43 @@ def finalize_lead(
             website_host_slug = _slug(wh.split(".")[0])
 
         # STRICT match: email host must EQUAL the company slug (or the verified
-        # website host slug), OR be within 3 characters of length. We do NOT
-        # accept "company_slug is a prefix of email_host_slug" because that's
-        # exactly the false-positive that lets "flaveursdurocher" pass for
-        # "flaveurs" (a different business sharing the brand prefix).
+        # website host slug), OR be within 3 characters of length, OR Dropcontact
+        # has returned a SIREN that matches the company we asked about (strongest
+        # cross-validation). We do NOT accept arbitrary prefix matches because
+        # those let "flaveursdurocher" pass for "flaveurs" (different business).
+        #
+        # Pre-strip common French corporate prefixes ("SAS", "SARL", "EURL"...)
+        # before comparing — Sirene names like "SAS BIBENT" should match
+        # bibent.fr even though the literal slugs differ.
+        def _strip_corp_prefixes(s: str) -> str:
+            return re.sub(
+                r"^(?:sas|sarl|eurl|sasu|sa|snc|scop|scic|scp|selas|selarl|"
+                r"holding|groupe|group|cie|compagnie)",
+                "",
+                s,
+            )
+        company_slug_clean = _strip_corp_prefixes(company_slug)
         match = False
         if email_host_slug and company_slug:
-            # Exact match (modulo articles already stripped)
-            if email_host_slug == company_slug:
+            # Rule 1: exact match (raw or after stripping corp prefix)
+            if email_host_slug in (company_slug, company_slug_clean):
                 match = True
-            # Within 3 chars (covers "lafaimdesharicots" ↔ "faimdesharicots"
-            # when article was stripped on one side)
-            elif abs(len(email_host_slug) - len(company_slug)) <= 3 and (
-                email_host_slug.startswith(company_slug) or
-                company_slug.startswith(email_host_slug) or
-                email_host_slug.endswith(company_slug) or
-                company_slug.endswith(email_host_slug)
-            ):
+            # Rule 2: within 3 chars length diff AND one is a suffix of the
+            # other (article stripped or corp prefix stripped on one side).
+            elif (abs(len(email_host_slug) - len(company_slug_clean)) <= 3
+                    and (email_host_slug.endswith(company_slug_clean)
+                         or company_slug_clean.endswith(email_host_slug))):
                 match = True
-            # Verified website host match — very strong signal since the
-            # website itself passed the strict FR / city-match filter.
+            # Rule 3: verified website host matches email host. Strong signal
+            # since the website itself passed the strict FR / city-match filter.
             elif website_host_slug and email_host_slug == website_host_slug:
+                match = True
+            # Rule 4: Dropcontact returned a SIREN that matches ours. This is
+            # the ultimate ground-truth — Dropcontact has cross-verified the
+            # contact against the legal company registry.
+            elif (dc_result.get("company_siren")
+                  and partial.get("siren")
+                  and str(dc_result["company_siren"]) == str(partial["siren"])):
                 match = True
         if not match:
             dc_cross_company = True

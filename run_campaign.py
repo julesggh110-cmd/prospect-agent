@@ -115,16 +115,29 @@ def run(
     t0 = time.time()
     campaign_id = campaign_id or _time.strftime("campaign-%Y%m%d-%H%M%S")
 
-    # 1. Source via Sirene
+    # 0. Sanity check: outbound SMTP. Many cloud VPS block port 25 by default,
+    # which silently zeroes-out email verification. We warn LOUDLY so the user
+    # knows why emails come back as "not verified" pattern guesses instead of
+    # blaming the pipeline.
+    from email_finder import smtp_outbound_available
+    if not smtp_outbound_available():
+        print("[WARN] Outbound SMTP (port 25) is BLOCKED on this host.")
+        print("       Emails will fall back to pattern-guess at low confidence.")
+        print("       If you need verified emails, run on a host with port 25 open,")
+        print("       or rely on DROPCONTACT_API_KEY for verified results.")
+
+    # 1. Source via Sirene — use paginated search so --volume > 25 works
+    # (Sirene caps each page at 25; without iteration, asking for 100 leads
+    # used to return 25).
     with SireneClient() as c:
-        resp = c.search(
+        resp = c.search_many(
+            target=volume,
             query=query,
             naf=naf,
             code_postal=code_postal,
             departement=departement,
             region=region,
             tranche_effectif=tranche_effectif,
-            per_page=min(volume, 25),
         )
     companies = resp.results[:volume]
     if not companies:
@@ -314,6 +327,10 @@ def _cli() -> None:
     p.add_argument("--retry-dropped", action="store_true",
                    help="After the main pass, retry dropped leads with relaxed thresholds "
                         "(min_contact_conf=30). Self-critique multi-pass.")
+    p.add_argument("--tenant", default=None,
+                   help="Tenant ID for multi-tenant deployments (defaults to env "
+                        "PROSPECT_AGENT_TENANT or 'default'). Leads are isolated "
+                        "per tenant in the lead store.")
     p.add_argument("--generate-emails", action="store_true",
                    help="Generate a personalized FR cold email per kept lead via "
                         "Claude Haiku. ~$0.0015/lead. Saved into the XLSX export.")
@@ -325,6 +342,12 @@ def _cli() -> None:
 
     if not any([args.query, args.naf, args.code_postal, args.departement, args.region]):
         p.error("provide at least one filter (--query / --naf / --code-postal / ...)")
+
+    # Apply tenant flag for the duration of this process — lead_store reads it
+    # from env. This way the rest of the code doesn't have to thread it through.
+    if args.tenant:
+        import os as _os
+        _os.environ["PROSPECT_AGENT_TENANT"] = args.tenant
 
     icp_profile = None
     if args.icp_preset:

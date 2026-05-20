@@ -31,38 +31,29 @@ from urllib.parse import quote_plus
 
 import httpx
 
-USER_AGENT = "ProspectAgent/0.8 (contact: prospect-agent@example.com)"
+USER_AGENT = "ProspectAgent/0.9 (contact: prospect-agent@example.com)"
 TIMEOUT = 25.0
 
 _NOMINATIM_URL = "https://nominatim.openstreetmap.org/search"
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
-# Throttle state
-_LAST_NOMINATIM = 0.0
-_LAST_OVERPASS = 0.0
-_NOMINATIM_INTERVAL = 1.1
-_OVERPASS_INTERVAL = 6.0
+# Thread-safe throttles (the previous `global _LAST_*` was racy under the
+# parallel enricher and risked tripping Nominatim's 1-req/sec rule).
+from http_safe import Throttle  # noqa: E402
+
+_NOMINATIM_THROTTLE = Throttle(min_interval_s=1.1)  # Nominatim hard 1/sec rule
+_OVERPASS_THROTTLE = Throttle(min_interval_s=6.0)   # Overpass ~10/min recommended
 
 # Small in-process geocoding cache
 _GEO_CACHE: dict[str, tuple[float, float]] = {}
 
 
 def _throttle_nominatim() -> None:
-    global _LAST_NOMINATIM
-    now = time.monotonic()
-    delta = now - _LAST_NOMINATIM
-    if delta < _NOMINATIM_INTERVAL:
-        time.sleep(_NOMINATIM_INTERVAL - delta)
-    _LAST_NOMINATIM = time.monotonic()
+    _NOMINATIM_THROTTLE.acquire()
 
 
 def _throttle_overpass() -> None:
-    global _LAST_OVERPASS
-    now = time.monotonic()
-    delta = now - _LAST_OVERPASS
-    if delta < _OVERPASS_INTERVAL:
-        time.sleep(_OVERPASS_INTERVAL - delta)
-    _LAST_OVERPASS = time.monotonic()
+    _OVERPASS_THROTTLE.acquire()
 
 
 def _geocode_city(city: str) -> Optional[tuple[float, float]]:

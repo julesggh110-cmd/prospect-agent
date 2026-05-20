@@ -119,6 +119,14 @@ Règles non-négociables :
 - Pas de "Bonjour," sec — utilise "Bonjour {Prénom},".
 - Pas de signature : on ajoutera ça côté outil.
 
+CONFORMITÉ GDPR / CNIL (à inclure côté outil avant envoi — pas dans ton body) :
+- L'identité du démarcheur doit être claire (signature ajoutée par l'outil).
+- Un lien d'opt-out / désinscription doit figurer en pied de mail.
+- La source de la donnée doit pouvoir être indiquée si le destinataire la demande.
+- Pour B2B FR : la prospection est légale sans opt-in préalable SI : (a) le poste
+  pro est ciblé en rapport avec ton offre, (b) un opt-out est disponible.
+  Source : CNIL, lignes directrices prospection commerciale.
+
 Tu retournes UN JSON strict :
 {
   "subject": "...",
