@@ -59,16 +59,67 @@ def _first_matching(results: Iterable[dict], host_pred) -> Optional[str]:
 # Public helpers
 # ---------------------------------------------------------------------------
 
-def find_linkedin_for_person(name: str, company: str) -> Optional[str]:
-    """Search for `name` LinkedIn profile mentioning `company`. Returns URL or None."""
+def find_linkedin_for_person(
+    name: str,
+    company: str,
+    *,
+    city: Optional[str] = None,
+    role: Optional[str] = None,
+) -> Optional[str]:
+    """Search for `name` LinkedIn profile mentioning `company`. Returns URL or None.
+
+    Multi-query: tries several combinations to maximise hit rate. The first
+    `linkedin.com/in/` URL that matches the person's name (in the slug or
+    snippet) wins. For FR SMB gérants, the role keyword ("gérant", "président")
+    in the query often pushes the right profile to position 1.
+    """
     if not name or not company:
         return None
-    query = f'site:linkedin.com/in/ "{name}" "{company}"'
-    results = _ddg_search(query, max_results=5)
-    return _first_matching(
-        results,
-        lambda h: h.endswith("linkedin.com") or h.endswith(".linkedin.com"),
+
+    # Normalize for slug matching at the end
+    name_tokens = [t for t in re.split(r"\s+", name) if t]
+    name_slug_check = "".join(
+        c for c in re.sub(r"[^a-zA-Z]+", "", name.lower())
     )
+
+    # Generate query variants — most specific first
+    bits_base = f'"{name}" "{company}"'
+    queries = [
+        f'site:linkedin.com/in {bits_base}',                # exact match both
+        f'site:linkedin.com/in "{name}" {company}',         # company unquoted
+        f'site:linkedin.com/in "{name}"' + (f' "{city}"' if city else ""),
+        f'"{name}" {company} linkedin',                     # broader, hope LI URL in results
+    ]
+    if role:
+        queries.insert(1, f'site:linkedin.com/in "{name}" "{role}"')
+
+    seen_urls: set[str] = set()
+    for q in queries:
+        results = _ddg_search(q, max_results=6)
+        for r in results:
+            url = r.get("href") or r.get("url") or ""
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            host = (urlparse(url).hostname or "").lower()
+            if not (host.endswith("linkedin.com") or host.endswith(".linkedin.com")):
+                continue
+            path = urlparse(url).path.lower()
+            if "/in/" not in path:
+                continue
+            # Sanity: the slug must contain part of the person's name
+            slug = re.sub(r"[^a-z]+", "", path.split("/in/")[-1].split("/")[0])
+            if not name_slug_check:
+                return url.split("?", 1)[0].rstrip("/")
+            # Match if any name token (>= 4 chars) appears in slug,
+            # OR the slug appears in the concatenated name
+            matched = (
+                any(t.lower() in slug for t in name_tokens if len(t) >= 4)
+                or slug in name_slug_check
+            )
+            if matched:
+                return url.split("?", 1)[0].rstrip("/")
+    return None
 
 
 def _company_slug(name: str) -> str:
@@ -149,19 +200,40 @@ def find_instagram_for_company(company: str, location: Optional[str] = None) -> 
     return _valid_instagram_account(url)
 
 
-def find_instagram_for_person(name: str, company: Optional[str] = None) -> Optional[str]:
-    """Find an Instagram account for a person (best-effort, often empty)."""
+def find_instagram_for_person(
+    name: str,
+    company: Optional[str] = None,
+    *,
+    city: Optional[str] = None,
+) -> Optional[str]:
+    """Find an Instagram account for a person (best-effort, often empty).
+
+    Tries a few query variants — bare name + city is often the only one that
+    surfaces hospitality chefs' personal accounts.
+    """
     if not name:
         return None
-    bits = [f'"{name}"', "site:instagram.com"]
+    queries = []
     if company:
-        bits.append(f'"{company}"')
-    results = _ddg_search(" ".join(bits), max_results=5)
-    url = _first_matching(
-        results,
-        lambda h: h.endswith("instagram.com") or h.endswith(".instagram.com"),
-    )
-    return _valid_instagram_account(url)
+        queries.append(f'"{name}" "{company}" site:instagram.com')
+    queries.append(f'"{name}" {city or ""} site:instagram.com'.strip())
+    queries.append(f'"{name}" chef site:instagram.com')
+
+    seen_urls: set[str] = set()
+    for q in queries:
+        results = _ddg_search(q, max_results=5)
+        for r in results:
+            url = r.get("href") or r.get("url") or ""
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            host = (urlparse(url).hostname or "").lower()
+            if not (host.endswith("instagram.com") or host.endswith(".instagram.com")):
+                continue
+            valid = _valid_instagram_account(url)
+            if valid:
+                return valid
+    return None
 
 
 # ---------------------------------------------------------------------------

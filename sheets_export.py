@@ -51,6 +51,11 @@ HEADERS = [
     "person_instagram", "person_instagram_conf",
     "overall_score",
     "is_new_lead",
+    # Research kit — 5 pre-built one-click URLs to fill missing data manually
+    # (50% of FR SMB gérants have no public LinkedIn / mobile, so we let the
+    # salesperson do a 30-second lookup themselves).
+    "research_linkedin", "research_instagram", "research_google",
+    "research_pagesjaunes", "research_societecom",
     # Cold email (only filled when --generate-emails was passed)
     "cold_email_subject", "cold_email_body", "cold_email_angle",
     "dropped", "drop_reason",
@@ -60,6 +65,13 @@ HEADERS = [
 def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this lazy
     def scored(field):
         return [field.value or "", field.confidence if field.value else ""]
+
+    # Build the per-lead research URL kit (5 clickable links)
+    try:
+        from research_urls import research_urls_for_lead
+        ru = research_urls_for_lead(lead)
+    except Exception:
+        ru = {}
 
     return [
         getattr(lead, "icp_score", "") or "",
@@ -85,6 +97,12 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         *scored(lead.person_instagram),
         lead.overall_score,
         "new" if getattr(lead, "is_new_lead", False) else "",
+        # Research kit URLs (always present, may be empty if data too thin)
+        ru.get("linkedin_search") or "",
+        ru.get("instagram_search") or "",
+        ru.get("google_lookup") or "",
+        ru.get("pagesjaunes") or "",
+        ru.get("societe_com") or "",
         getattr(lead, "cold_email_subject", "") or "",
         getattr(lead, "cold_email_body", "") or "",
         getattr(lead, "cold_email_angle", "") or "",
@@ -153,7 +171,10 @@ def _write_premium_xlsx(rows: list[list], xlsx_path: Path) -> None:
     conf_cols = {i + 1 for i, h in enumerate(header) if isinstance(h, str) and h.endswith("_conf")}
     url_cols = {
         i + 1 for i, h in enumerate(header)
-        if isinstance(h, str) and any(k in h for k in ("website", "linkedin", "instagram", "facebook"))
+        if isinstance(h, str) and any(
+            k in h for k in
+            ("website", "linkedin", "instagram", "facebook", "research_")
+        )
         and not h.endswith("_conf")
     }
 

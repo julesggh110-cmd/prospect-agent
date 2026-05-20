@@ -498,8 +498,14 @@ def finalize_lead(
     except Exception:
         pass
 
-    # 4. Person LinkedIn (filter: slug must contain first+last)
-    li_raw = find_linkedin_for_person(full_name, partial.get("company_name", ""))
+    # 4. Person LinkedIn (filter: slug must contain first+last). The new
+    # social_finder takes city + role hints to bump query precision.
+    li_raw = find_linkedin_for_person(
+        full_name,
+        partial.get("company_name", ""),
+        city=partial.get("city"),
+        role=person_role or None,
+    )
     if _name_in_linkedin_url(person_first, person_last, li_raw):
         li_field = ScoredField.from_single(li_raw, "ddg:linkedin-in", verified=True)
         name_sources.append(f"linkedin:{li_raw}")
@@ -507,7 +513,11 @@ def finalize_lead(
         li_field = ScoredField.missing()
 
     # 5. Person Instagram (best-effort, weak signal)
-    ig_raw = find_instagram_for_person(full_name, partial.get("company_name", ""))
+    ig_raw = find_instagram_for_person(
+        full_name,
+        partial.get("company_name", ""),
+        city=partial.get("city"),
+    )
     ig_field = (
         ScoredField.from_single(ig_raw, "ddg:instagram-person", verified=False)
         if ig_raw else ScoredField.missing()
