@@ -35,6 +35,10 @@ Rule types implemented:
 - `has_field`: lead field must be non-empty (e.g., "company_website")
 - `has_field_confidence_above`: {"person_email": 60} → email confidence ≥ 60
 - `min_field_confidence`: alias of the above
+- `cuisine_type_in`: lead.cuisine_type matches any of these (substring, case-insensitive)
+- `cuisine_type_not_in`: REJECT if lead.cuisine_type matches any (drops vegan/halal)
+- `gmb_rating_above`: float, lead.gmb_rating must be >= this (premium signal)
+- `gmb_review_count_above`: int, established business signal
 
 All rules are evaluated; their weights sum to 100 (caller should ensure that).
 A rule that matches contributes its weight; otherwise contributes 0.
@@ -86,6 +90,22 @@ def evaluate_rule(lead, rule: dict) -> bool:
         for fname, threshold in rule["min_field_confidence"].items():
             if _confidence_of(lead, fname) < threshold:
                 return False
+    if "cuisine_type_in" in rule:
+        ct = (getattr(lead, "cuisine_type", "") or "").lower()
+        if not any(kw.lower() in ct for kw in rule["cuisine_type_in"]):
+            return False
+    if "cuisine_type_not_in" in rule:
+        ct = (getattr(lead, "cuisine_type", "") or "").lower()
+        if any(kw.lower() in ct for kw in rule["cuisine_type_not_in"]):
+            return False
+    if "gmb_rating_above" in rule:
+        r = getattr(lead, "gmb_rating", None)
+        if r is None or float(r) < float(rule["gmb_rating_above"]):
+            return False
+    if "gmb_review_count_above" in rule:
+        rc = getattr(lead, "gmb_rating_count", None)
+        if rc is None or int(rc) < int(rule["gmb_review_count_above"]):
+            return False
     return True
 
 
@@ -132,6 +152,54 @@ PRESET_PALACES_PARIS = {
         {"name": "A un site web premium", "weight": 15, "has_field": "company_website"},
         {"name": "Email décideur fiable", "weight": 15, "min_field_confidence": {"person_email": 60}},
         {"name": "LinkedIn entreprise", "weight": 10, "has_field_confidence_above": {"company_linkedin": 50}},
+    ],
+}
+
+# Bear Brothers — premium spirits brand selling into CHR (Café/Hôtel/Restaurant).
+# Uses Google My Business cuisine_type as the operational qualifier:
+#   - BOOST cuisines that pair with spirits (gastro, brasserie, italian, bar)
+#   - REJECT cuisines incompatible with alcohol (vegan, healthy, halal-only,
+#     student canteen)
+# This single ICP is what turns a generic "restos Toulouse" list into a
+# pre-qualified Bear Brothers prospect list.
+PRESET_BEAR_BROTHERS_CHR = {
+    "name": "Bear Brothers CHR (spiritueux premium)",
+    "rules": [
+        # +30 if NAF is restaurant / café / bar
+        {"name": "CHR (restos/bars)", "weight": 25,
+         "naf_starts_with": ["56.10", "56.30", "55.10"]},
+        # +20 if cuisine type pairs with spirits (Google My Business label)
+        {"name": "Cuisine compatible spiritueux", "weight": 20,
+         "cuisine_type_in": [
+             "français", "francaise", "francais",
+             "brasserie", "bistro", "gastrono",
+             "italien", "italienne",
+             "bar", "cocktail", "pub", "wine",
+             "lounge", "tapas", "espagnol",
+             "fine dining", "fusion",
+         ]},
+        # -20 if cuisine type is incompatible (vegan, halal, cantine)
+        {"name": "Cuisine REJET (végé/halal/cantine)", "weight": 20,
+         "cuisine_type_not_in": [
+             "végétar", "vegetar", "vegan", "végan",
+             "healthy", "salade", "salad",
+             "halal", "kebab",
+             "boulang", "patisser", "patiss",
+             "cafétér", "cafeter", "fast food",
+             "asiatique", "asian",  # often low-alcohol culture
+         ]},
+        # +10 if Google rating ≥ 4.0 (established, popular = budget for premium)
+        {"name": "Bien noté (≥4.0)", "weight": 10, "gmb_rating_above": 4.0},
+        # +10 if at least 50 reviews (real established business, not pop-up)
+        {"name": "Établi (≥50 reviews)", "weight": 10, "gmb_review_count_above": 50},
+        # +10 if a website is published (means investment in branding)
+        {"name": "Site web actif", "weight": 5, "has_field": "company_website"},
+        # +5 if person LinkedIn — enables a warm DM pre-meeting
+        {"name": "LinkedIn décideur", "weight": 5,
+         "has_field_confidence_above": {"person_linkedin": 60}},
+        # +5 if person email — direct mail channel
+        {"name": "Email décideur", "weight": 5,
+         "has_field_confidence_above": {"person_email": 40}},
     ],
 }
 

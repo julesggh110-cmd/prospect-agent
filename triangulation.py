@@ -82,6 +82,11 @@ class Lead(BaseModel):
     company_address: Optional[str] = None
     company_size: Optional[str] = None
     company_website: Optional[str] = None
+    # Google My Business signals — surface the operational reality
+    # (cuisine type, rating, review count) so ICP can filter.
+    cuisine_type: Optional[str] = None
+    gmb_rating: Optional[float] = None
+    gmb_rating_count: Optional[int] = None
     company_linkedin: ScoredField = Field(default_factory=ScoredField.missing)
     company_instagram: ScoredField = Field(default_factory=ScoredField.missing)
     company_facebook: Optional[str] = None

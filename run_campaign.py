@@ -354,8 +354,11 @@ def _cli() -> None:
                    help="Output filename stem (e.g., 'prospects-dentistes-lyon')")
     p.add_argument("--max-workers", type=int, default=8,
                    help="Parallel enrichment workers (default 8)")
-    p.add_argument("--icp-preset", choices=["cavistes-paris", "palaces-paris"],
-                   help="Apply a preset ICP profile and add icp_score column")
+    p.add_argument("--icp-preset",
+                   choices=["cavistes-paris", "palaces-paris", "bear-brothers-chr"],
+                   help="Apply a preset ICP profile and add icp_score column. "
+                        "bear-brothers-chr uses GMB cuisine_type to filter "
+                        "vegan/halal/cantine and boost gastro/bar/brasserie.")
     p.add_argument("--only-new", action="store_true",
                    help="Skip companies already in lead_store (dedup across runs)")
     p.add_argument("--push-to-hubspot", action="store_true",
@@ -391,9 +394,16 @@ def _cli() -> None:
 
     icp_profile = None
     if args.icp_preset:
-        from icp import PRESET_CAVISTES_PREMIUM_PARIS, PRESET_PALACES_PARIS
-        icp_profile = {"cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
-                       "palaces-paris": PRESET_PALACES_PARIS}[args.icp_preset]
+        from icp import (
+            PRESET_BEAR_BROTHERS_CHR,
+            PRESET_CAVISTES_PREMIUM_PARIS,
+            PRESET_PALACES_PARIS,
+        )
+        icp_profile = {
+            "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
+            "palaces-paris": PRESET_PALACES_PARIS,
+            "bear-brothers-chr": PRESET_BEAR_BROTHERS_CHR,
+        }[args.icp_preset]
 
     run(
         query=args.query,

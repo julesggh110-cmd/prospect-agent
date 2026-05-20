@@ -37,6 +37,8 @@ except ImportError:  # pragma: no cover
 HEADERS = [
     "icp_score",
     "company_name", "company_siren", "company_naf_label",
+    "cuisine_type",       # Google My Business category — key ICP qualifier
+    "gmb_rating", "gmb_rating_count",  # rating + review count = premium signal
     "company_city", "company_address", "company_size", "company_website",
     "company_email",      # generic shared inbox (contact@, info@) — NOT the person
     "company_phone", "company_phone_conf",
@@ -78,6 +80,9 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         lead.company_name,
         lead.company_siren or "",
         lead.company_naf_label or "",
+        getattr(lead, "cuisine_type", "") or "",
+        getattr(lead, "gmb_rating", "") or "",
+        getattr(lead, "gmb_rating_count", "") or "",
         lead.company_city or "",
         lead.company_address or "",
         lead.company_size or "",

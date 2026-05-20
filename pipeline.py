@@ -33,6 +33,7 @@ from rich.console import Console
 from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
 from email_pattern_engine import guess_emails as guess_email_patterns
+from google_places import find_business_place, normalize_place
 from phone_utils import classify as classify_phone, normalize_fr_phone
 from mentions_legales import extract_legal_contacts
 from name_utils import clean_person_name
@@ -190,6 +191,25 @@ def enrich_company_partial(sirene_company) -> dict:
         if osm_data and not website and osm_data.get("website"):
             website = osm_data["website"]
 
+    # 2c. Google My Business via Serper /places. This is the qualifier layer
+    # — gives us cuisine TYPE (Française / Végétarienne / Italienne / Bar à
+    # cocktails / ...) plus the canonical website and listed phone. Crucial
+    # for downstream ICP filtering (a Bear Brothers spirits brand has no
+    # business prospecting a "Végétarienne" or "Halal" listing).
+    @_cached("gmb", f"{name}|{city or ''}")
+    def _gmb():
+        try:
+            p = find_business_place(name, city)
+            return normalize_place(p) if p else None
+        except Exception:
+            return None
+    gmb_data = _gmb() or {}
+
+    # Promote GMB-discovered website if we didn't have one (Google is the
+    # disambiguation source of truth for which website is THIS business).
+    if not website and gmb_data.get("website"):
+        website = gmb_data["website"].rstrip("/")
+
     # 2c. Direct domain-guess fallback (e.g. lebibent.com). Free, fast, and works
     # for ~30% of FR SMBs whose Sirene/Pappers record has no website.
     if not website:
@@ -253,6 +273,42 @@ def enrich_company_partial(sirene_company) -> dict:
         [(web_li, website or "website"),
          (li_search, "search:linkedin-company")],
     )
+    # Cross-company DETECTION for LinkedIn entreprise: when a LinkedIn URL
+    # was found, check the /company/<slug> matches the Sirene company name.
+    # If not (e.g. 'flaveurs' → linkedin.com/company/magazine-flaveurs which
+    # is a different business), downgrade confidence + add a CROSS-COMPANY
+    # note so the salesperson knows.
+    if li_field.value:
+        from urllib.parse import urlparse as _urlp
+        path = (_urlp(li_field.value).path or "").lower()
+        if "/company/" in path:
+            li_slug = path.split("/company/")[-1].split("/")[0]
+            li_slug_clean = re.sub(r"[^a-z0-9]+", "", li_slug)
+            import unicodedata as _ud
+            def _norm(s):
+                s = _ud.normalize("NFKD", s or "")
+                s = "".join(c for c in s if not _ud.combining(c)).lower()
+                return re.sub(r"[^a-z0-9]+", "", s)
+            co_slug = _norm(name)
+            # Strip common FR corp prefixes (SARL, SAS, EURL...) before compare
+            co_slug_clean = re.sub(
+                r"^(?:sas|sarl|eurl|sasu|sa|snc|scop|scic|scp|selas|selarl)",
+                "",
+                co_slug,
+            )
+            li_matches = bool(li_slug_clean and (
+                li_slug_clean == co_slug
+                or li_slug_clean == co_slug_clean
+                or (len(li_slug_clean) >= 4 and len(co_slug_clean) >= 4
+                    and (li_slug_clean in co_slug_clean or co_slug_clean in li_slug_clean))
+            ))
+            if not li_matches:
+                # Keep the URL (still useful info), but lower confidence and flag
+                li_field.confidence = min(li_field.confidence, 35)
+                li_field.note = (
+                    f"CROSS-COMPANY: LinkedIn slug '{li_slug}' "
+                    f"does not match Sirene name '{name}'. Verify before use."
+                )
     ig_field = triangulate_url(
         [(web_ig, website or "website"),
          (ig_search, "search:instagram-company")],
@@ -283,6 +339,10 @@ def enrich_company_partial(sirene_company) -> dict:
     # Multiple sources strengthen triangulation confidence (90 vs 35).
     if osm_data and osm_data.get("phone"):
         _push_phone(osm_data["phone"], "osm")
+    # Google My Business listed phone — Google's source of truth for what
+    # this business publishes publicly.
+    if gmb_data.get("phone"):
+        _push_phone(gmb_data["phone"], "google-places")
     # PJ behind Cloudflare — best-effort, fails silently
     if not phone_sources:
         @_cached("pagesjaunes", f"{name}|{city or ''}")
@@ -376,6 +436,13 @@ def enrich_company_partial(sirene_company) -> dict:
         "company_phone": phone_field.model_dump(),
         # Mentions légales — used by finalize_lead for person-level enrichment
         "mentions_legales": mentions,
+        # Google My Business — cuisine type, rating, photos. Used downstream
+        # for ICP scoring (a "Végétarienne" is dropped from a spirits-brand
+        # campaign, a "Bar à cocktails" is boosted).
+        "gmb": gmb_data,
+        "cuisine_type": gmb_data.get("type") or gmb_data.get("category"),
+        "gmb_rating": gmb_data.get("rating"),
+        "gmb_rating_count": gmb_data.get("rating_count"),
     }
 
 
@@ -881,6 +948,9 @@ def finalize_lead(
         company_size=partial.get("size"),
         company_website=partial.get("website"),
         company_email=partial.get("company_email"),
+        cuisine_type=partial.get("cuisine_type"),
+        gmb_rating=partial.get("gmb_rating"),
+        gmb_rating_count=partial.get("gmb_rating_count"),
         company_linkedin=ScoredField(**partial["company_linkedin"]),
         company_instagram=ScoredField(**partial["company_instagram"]),
         company_phone=company_phone_field,
