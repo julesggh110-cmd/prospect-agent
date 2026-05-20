@@ -30,10 +30,18 @@ from typing import Iterable, Optional
 
 from rich.console import Console
 
+from bettercontact_client import enrich_person as bettercontact_enrich, have_bettercontact_key
+from datagma_client import find_full as datagma_find, have_datagma_key
 from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
 from email_pattern_engine import guess_emails as guess_email_patterns
 from google_places import find_business_place, normalize_place
+from here_maps import find_business_here, have_here_key
+from hunter_client import (
+    find_email_by_domain as hunter_find_email,
+    have_hunter_key,
+    verify_email as hunter_verify,
+)
 from phone_utils import classify as classify_phone, normalize_fr_phone
 from mentions_legales import extract_legal_contacts
 from name_utils import clean_person_name
@@ -191,11 +199,8 @@ def enrich_company_partial(sirene_company) -> dict:
         if osm_data and not website and osm_data.get("website"):
             website = osm_data["website"]
 
-    # 2c. Google My Business via Serper /places. This is the qualifier layer
-    # — gives us cuisine TYPE (Française / Végétarienne / Italienne / Bar à
-    # cocktails / ...) plus the canonical website and listed phone. Crucial
-    # for downstream ICP filtering (a Bear Brothers spirits brand has no
-    # business prospecting a "Végétarienne" or "Halal" listing).
+    # 2c. Google My Business via Serper /places. Gives cuisine TYPE + rating
+    # + canonical website. Crucial for ICP filtering (vegan vs gastro).
     @_cached("gmb", f"{name}|{city or ''}")
     def _gmb():
         try:
@@ -205,10 +210,23 @@ def enrich_company_partial(sirene_company) -> dict:
             return None
     gmb_data = _gmb() or {}
 
-    # Promote GMB-discovered website if we didn't have one (Google is the
-    # disambiguation source of truth for which website is THIS business).
     if not website and gmb_data.get("website"):
         website = gmb_data["website"].rstrip("/")
+
+    # 2d. HERE Maps Places — 250k free transactions/month, has PHONE numbers
+    # (Serper's /places doesn't return phones in basic responses, HERE does).
+    # This is the big free win for company_phone coverage.
+    here_data: dict = {}
+    if have_here_key():
+        @_cached("here", f"{name}|{city or ''}")
+        def _here():
+            try:
+                return find_business_here(name, city)
+            except Exception:
+                return None
+        here_data = _here() or {}
+        if not website and here_data.get("website"):
+            website = here_data["website"].rstrip("/")
 
     # 2c. Direct domain-guess fallback (e.g. lebibent.com). Free, fast, and works
     # for ~30% of FR SMBs whose Sirene/Pappers record has no website.
@@ -343,6 +361,10 @@ def enrich_company_partial(sirene_company) -> dict:
     # this business publishes publicly.
     if gmb_data.get("phone"):
         _push_phone(gmb_data["phone"], "google-places")
+    # HERE Maps listed phone — usually present even when Google's isn't,
+    # since HERE aggregates Tripadvisor + Yelp + carrier directories.
+    if here_data.get("phone"):
+        _push_phone(here_data["phone"], "here-maps")
     # PJ behind Cloudflare — best-effort, fails silently
     if not phone_sources:
         @_cached("pagesjaunes", f"{name}|{city or ''}")
@@ -572,9 +594,10 @@ def finalize_lead(
     # corroborating source (the personal pattern email also appearing scraped on
     # the website). Otherwise the user thinks they have Marie's email when in
     # reality it bounces.
-    # Dropcontact enrichment (highest-trust source — single API call returns
-    # email + phone + sometimes LinkedIn). Cached per (first, last, company)
-    # since results are stable. Cost: 1 credit on Dropcontact's plan.
+    # Person enrichment WATERFALL: Dropcontact → Hunter → Datagma → BetterContact.
+    # We stop early once we have both email AND mobile (no need to spend more
+    # credits if we got everything). Each source has its own free tier so the
+    # default config is "all-free, cumulative coverage".
     dc_result = None
     if have_dropcontact_key() and person_first and person_last:
         @_cached("dropcontact", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
@@ -588,6 +611,96 @@ def finalize_lead(
             except Exception:
                 return None
         dc_result = _dc()
+
+    # Aggregate the waterfall results in a single dict (later cascade sources
+    # fill in what earlier ones missed). Each layer is OPT-IN by key presence.
+    waterfall_email: Optional[str] = (dc_result or {}).get("email")
+    waterfall_phone: Optional[str] = (dc_result or {}).get("phone")
+    waterfall_linkedin: Optional[str] = (dc_result or {}).get("linkedin")
+    waterfall_sources: list[str] = ["dropcontact"] if dc_result else []
+
+    # 2nd source: Hunter (50 free credits/mo) — try when we don't have an
+    # email yet AND we have a website domain to query.
+    if not waterfall_email and have_hunter_key() and partial.get("website") and person_first and person_last:
+        from urllib.parse import urlparse as _urlp
+        host = (_urlp(partial["website"]).hostname or "").lower().removeprefix("www.")
+        if host:
+            @_cached("hunter", f"{person_first}|{person_last}|{host}")
+            def _hunter():
+                try:
+                    return hunter_find_email(person_first, person_last, host)
+                except Exception:
+                    return None
+            h = _hunter() or {}
+            if h.get("email"):
+                waterfall_email = h["email"]
+                waterfall_sources.append(f"hunter(score={h.get('score')})")
+
+    # 3rd source: Datagma (50 free credits + 160 API matches) — French
+    # specialist. Try when we still need email OR mobile.
+    if (not waterfall_email or not waterfall_phone) and have_datagma_key() and person_first and person_last:
+        @_cached("datagma", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
+        def _dg():
+            try:
+                # If we have the email already, skip the mobile lookup to save 30 credits
+                return datagma_find(person_first, person_last,
+                                     partial.get("company_name") or "",
+                                     want_phone=not waterfall_phone)
+            except Exception:
+                return None
+        dg = _dg() or {}
+        if dg.get("email") and not waterfall_email:
+            waterfall_email = dg["email"]
+            waterfall_sources.append("datagma")
+        if dg.get("phone") and not waterfall_phone:
+            waterfall_phone = dg["phone"]
+            waterfall_sources.append("datagma-phone")
+        if dg.get("linkedin") and not waterfall_linkedin:
+            waterfall_linkedin = dg["linkedin"]
+
+    # 4th source: BetterContact (50 free credits, PAY-PER-VALID, 20+ providers).
+    # Last resort because the polling is slow (~30s). Only fires if we still
+    # need email OR mobile after Dropcontact/Hunter/Datagma all failed.
+    if (not waterfall_email or not waterfall_phone) and have_bettercontact_key() and person_first and person_last:
+        from urllib.parse import urlparse as _urlp
+        host = ""
+        if partial.get("website"):
+            host = (_urlp(partial["website"]).hostname or "").lower().removeprefix("www.")
+        @_cached("bettercontact", f"{person_first}|{person_last}|{partial.get('company_name', '')}|{host}")
+        def _bc():
+            try:
+                return bettercontact_enrich(
+                    person_first, person_last,
+                    partial.get("company_name") or "",
+                    linkedin_url=waterfall_linkedin,
+                    company_domain=host or None,
+                    enrich_email=not waterfall_email,
+                    enrich_phone=not waterfall_phone,
+                )
+            except Exception:
+                return None
+        bc = _bc() or {}
+        if bc.get("email") and not waterfall_email:
+            waterfall_email = bc["email"]
+            waterfall_sources.append("bettercontact")
+        if bc.get("phone") and not waterfall_phone:
+            waterfall_phone = bc["phone"]
+            waterfall_sources.append("bettercontact-phone")
+        if bc.get("linkedin") and not waterfall_linkedin:
+            waterfall_linkedin = bc["linkedin"]
+
+    # Overwrite dc_result with the consolidated waterfall result so the
+    # downstream code paths (cross-company detection, email/phone assignment)
+    # see the best value found across all sources.
+    if waterfall_email or waterfall_phone or waterfall_linkedin:
+        dc_result = {
+            "email": waterfall_email,
+            "phone": waterfall_phone,
+            "linkedin": waterfall_linkedin,
+            "email_qualification": (dc_result or {}).get("email_qualification"),
+            "company_siren": (dc_result or {}).get("company_siren"),
+            "_waterfall_sources": waterfall_sources,
+        }
 
     # CROSS-COMPANY DETECTION on Dropcontact result. Dropcontact returns the
     # person's CURRENT email, which may be at a DIFFERENT employer than the

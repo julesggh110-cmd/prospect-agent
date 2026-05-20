@@ -61,13 +61,23 @@ See `DETAILS.md` for the full workflow, module reference, and examples.
 ## Environment
 
 Required at runtime: nothing — the agent works with zero keys (just slower).
-Strongly recommended (free tiers cover all testing, **no card required**):
-- `SERPER_API_KEY` → PRIMARY search backend (LinkedIn/Insta discovery). 2,500 free queries one-shot. Sign up: https://serper.dev
-- `DROPCONTACT_API_KEY` → personal email + phone enrichment (FR, GDPR). 50 free credits. Sign up: https://www.dropcontact.com/signup
-- `PAPPERS_API_KEY` → direct website/email/phone for FR companies (100/day free)
-- `BRAVE_SEARCH_API_KEY` → legacy search backend (2k/month, may exhaust)
-- `HUBSPOT_ACCESS_TOKEN` → push leads straight into HubSpot CRM
-- `ANTHROPIC_API_KEY` → only needed for `--generate-emails` (cold email drafting). Your Claude Code MAX subscription does NOT cover this — it's a separate API key.
+**All free tiers below are no-card-required.** Recommended setup:
+
+**Search & business data**:
+- `SERPER_API_KEY` → search backend (LinkedIn/Insta). 2,500 free. https://serper.dev
+- `HERE_MAPS_API_KEY` → company phone + cuisine type. **250,000 free/month.** https://platform.here.com
+- `PAPPERS_API_KEY` → website/email/phone for FR companies. 100/day free.
+
+**Person enrichment waterfall** (cascaded in this order):
+- `DROPCONTACT_API_KEY` → email + phone, French + GDPR. 50 free credits.
+- `HUNTER_API_KEY` → email finder/verifier. 50 free credits/month.
+- `DATAGMA_API_KEY` → French specialist (95% accuracy). 50 credits + 160 API matches free.
+- `BETTERCONTACT_API_KEY` → 20-provider waterfall, PAY-PER-VALID. 50 free credits.
+
+**Other**:
+- `HUBSPOT_ACCESS_TOKEN` → push leads to HubSpot CRM.
+- `ANTHROPIC_API_KEY` → only for `--generate-emails` (cold email Haiku, ~$0.0015/lead).
+- `BRAVE_SEARCH_API_KEY` → legacy search backend (2k/month).
 
 Run `python setup_wizard.py --check` to confirm. If a key is missing, tell the user the URL to get one (in `setup_wizard.py`).
 
