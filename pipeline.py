@@ -32,6 +32,7 @@ from rich.console import Console
 
 from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
+from email_pattern_engine import guess_emails as guess_email_patterns
 from mentions_legales import extract_legal_contacts
 from name_utils import clean_person_name
 from pappers_client import enrich_with_pappers, have_pappers_key
@@ -660,6 +661,37 @@ def finalize_lead(
                 )
             # Otherwise (not_deliverable, no_mx, smtp_unreachable without corroboration)
             # we leave email_field as missing — better empty than wrong.
+
+    # PRIORITY 99 (LAST RESORT): no source found us a verified email. Generate
+    # the most likely pattern from (first, last, company) using the dedicated
+    # email_pattern_engine. Confidence is capped at 40 and the note is loud
+    # — meant for 1-to-1 outreach where the salesperson tests deliverability
+    # manually. Skipped if we already have something (any earlier source wins).
+    if not email_field.value and person_first and person_last:
+        try:
+            pe = guess_email_patterns(
+                person_first, person_last,
+                partial.get("company_name") or "",
+                website=partial.get("website"),
+                role=person_role or None,
+                use_llm_for_domain=True,  # Haiku-guarded by DNS-MX check
+                max_variants=5,
+            )
+            if pe.get("primary_email"):
+                source_tag = f"pattern-guess:{pe.get('domain_source', 'unknown')}"
+                email_field = ScoredField(
+                    value=pe["primary_email"],
+                    sources=[source_tag],
+                    confidence=pe["patterns"][0]["confidence"],
+                    note=(
+                        f"PATTERN GUESS — domain via {pe.get('domain_source')}. "
+                        f"NOT verified. Test before sending. "
+                        f"Alt: {', '.join(p['email'] for p in pe['patterns'][1:3])}"
+                    ),
+                )
+                name_sources.append(f"pattern-email:{pe['primary_email']}")
+        except Exception:
+            pass
 
     # 3a-bis. Phone: Dropcontact > Mentions Légales > Mobile Finder > none.
     person_phone_field = ScoredField.missing()
