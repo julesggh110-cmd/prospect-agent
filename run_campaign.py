@@ -286,7 +286,9 @@ def run(
 
     # 3. Finalize each lead — Phase-1 default: take the first legal director.
     leads = []
-    sirens = [c.siren for c in companies if c.siren]
+    # Source SIRENs from the partials (works for both raw and perfect mode
+    # since partials always have the 'siren' key from Sirene).
+    sirens = [p.get("siren") for p in partials if p.get("siren")]
     if only_new:
         # We already filtered out seen ones above — all current ones are "new" by construction
         new_sirens = set(sirens)

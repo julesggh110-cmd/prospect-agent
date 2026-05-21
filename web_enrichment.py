@@ -267,8 +267,37 @@ def _extract_from_html(html: str, base_url: str) -> dict:
     }
 
 
-def enrich_company_from_website(url: str, *, fetch_team_page: bool = True) -> WebEnrichment:
-    """Fetch a company homepage and (optionally) its team page; return aggregated info."""
+# Standard FR/EN contact-page URL paths, ordered by hit frequency on FR SMBs.
+# This is the deep-crawl alternative to running a heavy Playwright-based
+# scraper (gosom/google-maps-scraper). Most SMB sites publish their
+# real-listed contact info on /contact (NOT homepage).
+_CONTACT_PATHS = (
+    # FR-first
+    "/contact", "/contactez-nous", "/nous-contacter", "/contacts",
+    "/contact-us", "/contact/",
+    # About / "Who we are" — often contains owner names + emails
+    "/a-propos", "/à-propos", "/qui-sommes-nous", "/about",
+    "/about-us", "/notre-equipe", "/notre-équipe", "/team",
+    # Footer-only contact info on retail/restaurant sites
+    "/coordonnees", "/horaires",
+)
+
+
+def enrich_company_from_website(url: str, *, fetch_team_page: bool = True,
+                                  deep_crawl: bool = True) -> WebEnrichment:
+    """Fetch a company website and harvest contact info from multiple pages.
+
+    Pages visited (in order, deduped):
+      1. Homepage
+      2. Top team-candidate link from homepage (if `fetch_team_page=True`)
+      3. /contact, /contactez-nous, /nous-contacter, /contact-us
+      4. /a-propos, /qui-sommes-nous, /about
+      5. /coordonnees (small FR retail sites)
+    Each page contributes emails/phones/socials to the aggregate. Cap at ~6
+    pages total to stay polite (and fast).
+
+    `deep_crawl=False` falls back to the old behavior (homepage + 1 team page).
+    """
     root_url = url if url.startswith(("http://", "https://")) else "https://" + url
     enrichment = WebEnrichment(root_url=root_url)
 
@@ -279,6 +308,7 @@ def enrich_company_from_website(url: str, *, fetch_team_page: bool = True) -> We
             follow_redirects=True,
             verify=False,  # many small business sites have broken certs
         ) as client:
+            # 1. Homepage
             resp = client.get(root_url)
             resp.raise_for_status()
             home_url = str(resp.url)
@@ -296,35 +326,76 @@ def enrich_company_from_website(url: str, *, fetch_team_page: bool = True) -> We
             enrichment.twitter = extracted["twitter"]
             enrichment.youtube = extracted["youtube"]
 
-            # Try one team page (the first candidate that looks promising)
+            # Helper to merge another page's extraction into the aggregate
+            def _merge_page(page_url: str, page_extracted: dict, *, is_team: bool = False) -> None:
+                if page_url not in enrichment.pages_fetched:
+                    enrichment.pages_fetched.append(page_url)
+                enrichment.emails = _dedupe(enrichment.emails + page_extracted["emails"])
+                enrichment.emails_generic = _dedupe(
+                    enrichment.emails_generic + page_extracted["emails_generic"]
+                )
+                enrichment.emails_personal = _dedupe(
+                    enrichment.emails_personal + page_extracted["emails_personal"]
+                )
+                enrichment.phones = _dedupe(enrichment.phones + page_extracted["phones"])
+                enrichment.linkedin_profiles = _dedupe(
+                    enrichment.linkedin_profiles + page_extracted["linkedin_profiles"]
+                )
+                if not enrichment.linkedin_company:
+                    enrichment.linkedin_company = page_extracted["linkedin_company"]
+                if not enrichment.instagram_account:
+                    enrichment.instagram_account = page_extracted["instagram"]
+                if is_team:
+                    enrichment.team_page_url = page_url
+                    enrichment.team_page_text = page_extracted["text"][:20_000]
+
+            # 2. Team page from homepage candidates (legacy behavior)
             if fetch_team_page and extracted["team_candidates"]:
                 team_url = extracted["team_candidates"][0]
                 try:
                     tresp = client.get(team_url)
                     tresp.raise_for_status()
-                    enrichment.pages_fetched.append(str(tresp.url))
-                    team_extracted = _extract_from_html(tresp.text, str(tresp.url))
-                    enrichment.team_page_url = str(tresp.url)
-                    # cap text at 20k chars so Claude doesn't choke on giant pages
-                    enrichment.team_page_text = team_extracted["text"][:20_000]
-                    # merge new emails/phones/socials
-                    enrichment.emails = _dedupe(enrichment.emails + team_extracted["emails"])
-                    enrichment.emails_generic = _dedupe(
-                        enrichment.emails_generic + team_extracted["emails_generic"]
-                    )
-                    enrichment.emails_personal = _dedupe(
-                        enrichment.emails_personal + team_extracted["emails_personal"]
-                    )
-                    enrichment.phones = _dedupe(enrichment.phones + team_extracted["phones"])
-                    enrichment.linkedin_profiles = _dedupe(
-                        enrichment.linkedin_profiles + team_extracted["linkedin_profiles"]
-                    )
-                    if not enrichment.linkedin_company:
-                        enrichment.linkedin_company = team_extracted["linkedin_company"]
-                    if not enrichment.instagram_account:
-                        enrichment.instagram_account = team_extracted["instagram"]
+                    page_extracted = _extract_from_html(tresp.text, str(tresp.url))
+                    _merge_page(str(tresp.url), page_extracted, is_team=True)
                 except Exception:
-                    pass  # team page is best-effort
+                    pass  # best-effort
+
+            # 3. DEEP CRAWL — visit standard contact/about paths (the OS
+            # Google Maps scrapers do this; we replicate it in pure Python
+            # without Playwright). Capped at 5 extra fetches per site +
+            # short-circuit if homepage already gave us 2+ emails AND 2+
+            # phones (don't waste requests on data we already have).
+            if deep_crawl:
+                have_enough = (
+                    len(enrichment.emails) >= 2
+                    and len(enrichment.phones) >= 2
+                )
+                if not have_enough:
+                    visited_paths: set[str] = set()
+                    for path in _CONTACT_PATHS[:8]:    # cap candidates probed
+                        if len(enrichment.pages_fetched) >= 6:
+                            break  # total page cap
+                        page_url = urljoin(home_url, path)
+                        norm = page_url.rstrip("/").lower()
+                        if norm in visited_paths or norm in {p.rstrip("/").lower() for p in enrichment.pages_fetched}:
+                            continue
+                        visited_paths.add(norm)
+                        try:
+                            cresp = client.get(page_url)
+                            if cresp.status_code >= 400:
+                                continue
+                            # Cheap noise filter — skip if it's a custom 404 with no contact info
+                            body_low = cresp.text[:5000].lower()
+                            if "404" in body_low and ("not found" in body_low or "page introuvable" in body_low):
+                                if "@" not in body_low:
+                                    continue
+                            page_extracted = _extract_from_html(cresp.text, str(cresp.url))
+                            _merge_page(str(cresp.url), page_extracted)
+                            # Short-circuit: if we now have at least 2 emails AND 2 phones, stop
+                            if len(enrichment.emails) >= 2 and len(enrichment.phones) >= 2:
+                                break
+                        except Exception:
+                            continue
 
     except httpx.HTTPError as exc:
         enrichment.error = f"HTTPError: {exc}"
