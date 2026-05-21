@@ -684,6 +684,32 @@ def is_junk_company_name(name: str) -> bool:
     return bool(_JUNK_NAME_RX.search(name))
 
 
+# NAF prefixes for sectors where GMB cuisine_type / rating are meaningful
+# signals (consumer-facing businesses with Google reviews). For B2B services,
+# manufacturing, SaaS, etc., these signals are usually absent / irrelevant.
+_GMB_RELEVANT_NAF_PREFIXES = (
+    "55", "56",  # hôtels / restaurants / cafés
+    "47",        # commerce de détail
+    "96",        # services personnels (coiffeur, esthéticienne, etc.)
+    "86", "87",  # santé (cabinet médical, EHPAD)
+    "85.5",      # formation continue (visible auprès du grand public)
+    "93",        # sport / loisirs
+    "79",        # agences de voyages
+)
+
+
+def _is_gmb_relevant_sector(naf: str) -> bool:
+    """Should we expect (and weight) GMB cuisine_type + rating signals?
+
+    Returns True for consumer-facing sectors (CHR, retail, healthcare,
+    consumer services). Returns False for pure B2B (SaaS, conseil, industrie)
+    where GMB listings are rare/absent and shouldn't drive the score.
+    """
+    if not naf:
+        return False
+    return any(naf.startswith(p) for p in _GMB_RELEVANT_NAF_PREFIXES)
+
+
 def preliminary_score(partial: dict) -> int:
     """Cheap-source-only 'is this lead worth paid enrichment' score (0-100).
 
@@ -692,47 +718,72 @@ def preliminary_score(partial: dict) -> int:
     two-pass strategy: if score < threshold, skip the paid waterfall
     (Dropcontact + Hunter + Datagma + BetterContact) to save credits.
 
-    Rules (additive):
+    SECTOR-AWARE: for B2B-only NAFs (SaaS, conseil, industrie), GMB signals
+    are irrelevant — we don't penalise missing cuisine_type. For
+    consumer-facing NAFs (CHR, retail), GMB signals are required.
+
+    Rules (additive, capped at 100):
       -100 if junk name (syndicat / mutuelle / agence publique / etc.)
-      +30 has GMB cuisine_type (= confirmed operational real business)
-      +20 has GMB rating >= 4.0 (= established, popular)
-      +15 has GMB rating_count >= 20 (= real customer base, not phantom)
       +20 has a verified company website (strict-FR-filter passed)
-      +10 has a phone (any source)
-      +5  has company LinkedIn
-      +5  has at least one dirigeant nominatif
+      +20 has a phone (any source)
+      +15 has company LinkedIn entreprise
+      +15 has at least one dirigeant nominatif
+      +10 has BODACC growth signal (augmentation capital, créations, etc.)
+      [If GMB-relevant NAF only:]
+      +20 has GMB cuisine_type
+      +15 has GMB rating >= 4.0
+      +10 has GMB rating_count >= 20
     """
     # Hard reject: junk names are mis-classified entities. No paid enrichment.
     if is_junk_company_name(partial.get("company_name", "")):
         return 0
     score = 0
-    if partial.get("cuisine_type"):
-        score += 30
-    r = partial.get("gmb_rating")
-    if r is not None:
-        try:
-            if float(r) >= 4.0:
-                score += 20
-        except Exception:
-            pass
-    rc = partial.get("gmb_rating_count")
-    if rc is not None:
-        try:
-            if int(rc) >= 20:
-                score += 15
-        except Exception:
-            pass
+    naf = partial.get("naf") or ""
+    gmb_relevant = _is_gmb_relevant_sector(naf)
+
+    # Universal signals (apply to all sectors)
     if partial.get("website"):
         score += 20
     co_phone = (partial.get("company_phone") or {}).get("value")
     if co_phone:
-        score += 10
+        score += 20
     co_li = (partial.get("company_linkedin") or {}).get("value")
     if co_li:
-        score += 5
+        score += 15
     dirs = partial.get("legal_dirigeants") or []
     if dirs and dirs[0].get("first") and dirs[0].get("last"):
-        score += 5
+        score += 15
+    # BODACC growth signals = company investing → good for any pitch
+    bodacc_verdict = partial.get("bodacc_verdict")
+    if bodacc_verdict == "QUALITY_BOOST":
+        score += 10
+
+    # CHR/retail-only signals
+    if gmb_relevant:
+        if partial.get("cuisine_type"):
+            score += 20
+        r = partial.get("gmb_rating")
+        if r is not None:
+            try:
+                if float(r) >= 4.0:
+                    score += 15
+            except Exception:
+                pass
+        rc = partial.get("gmb_rating_count")
+        if rc is not None:
+            try:
+                if int(rc) >= 20:
+                    score += 10
+            except Exception:
+                pass
+    else:
+        # For B2B-only sectors, GMB signals are usually absent. Substitute
+        # 'company has 50+ employees per Sirene' as a quality proxy (= real
+        # mature company, not a one-person SCI / shell).
+        size = partial.get("size") or ""
+        if size in ("21", "22", "31", "32", "41", "42", "51", "52", "53"):
+            score += 15
+
     return min(100, score)
 
 

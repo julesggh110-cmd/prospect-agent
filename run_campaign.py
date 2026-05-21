@@ -97,6 +97,8 @@ def run(
     generate_emails: bool = False,
     sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
     sender_company: str = "Bear Brothers",
+    sender_pitch: str | None = None,
+    target_icp_description: str | None = None,
     paid_threshold: int = 40,
     max_candidates: int | None = None,
     raw_mode: bool = False,
@@ -486,6 +488,8 @@ def run(
             kept_for_email,
             sender_offer=sender_offer,
             sender_company=sender_company,
+            sender_pitch=sender_pitch,
+            target_icp_description=target_icp_description,
         )
         # Attach the generated email body to the lead model as extra fields so
         # the XLSX export picks them up.
@@ -554,9 +558,14 @@ def run(
 def _cli() -> None:
     p = argparse.ArgumentParser(description="Run a full prospection campaign in one call.")
     p.add_argument("--query", help="Free-text Sirene query (e.g., 'cabinet dentaire')")
-    p.add_argument("--naf", help="NAF code (e.g., 86.23Z)")
-    p.add_argument("--code-postal", help="Postal code (e.g., 69001)")
-    p.add_argument("--departement", help="Département (e.g., 69)")
+    p.add_argument("--naf",
+                   help="NAF code(s), comma-separated. Examples: "
+                        "single='86.23Z'; multi='70.22Z,78.10Z,82.99Z'.")
+    p.add_argument("--code-postal",
+                   help="Postal code(s), comma-separated. e.g. '69001,69002'.")
+    p.add_argument("--departement",
+                   help="Département(s), comma-separated. e.g. '31,34,33' "
+                        "for Toulouse+Montpellier+Bordeaux.")
     p.add_argument("--region", help="Région code")
     p.add_argument("--tranche-effectif", dest="tranche_effectif",
                    help="Sirene size code: 00=0 emp, 01=1-2, 02=3-5, 03=6-9, "
@@ -622,6 +631,13 @@ def _cli() -> None:
                    help="DEBUG: disable PERFECT MODE quality gates. Returns "
                         "the first `--volume` Sirene candidates regardless "
                         "of quality. Use only to compare/debug.")
+    p.add_argument("--icp-description",
+                   help="ICP description in French. Claude Haiku will "
+                        "generate the NAF / dept / size / persona "
+                        "automatically. Example: 'Je vends du conseil RGPD "
+                        "aux ETI industrielles 100-500 emp en AURA'. "
+                        "When set, overrides --naf / --dept / --tranche-effectif "
+                        "/ --persona (unless those are also explicitly set).")
     p.add_argument("--quotas", action="store_true",
                    help="Print the current quota status and exit (no campaign).")
     p.add_argument("--generate-emails", action="store_true",
@@ -631,6 +647,10 @@ def _cli() -> None:
                    help="One-line description of what you're selling (FR)")
     p.add_argument("--sender-company", default="Bear Brothers",
                    help="Your company name (signed/referenced in the email)")
+    p.add_argument("--sender-pitch",
+                   help="Multi-line detailed pitch describing your offer "
+                        "(value prop, use cases, differentiators). Passed to "
+                        "Claude for richer email personalization.")
     args = p.parse_args()
 
     # Quota helpers — let the operator inspect / set caps from the same CLI
@@ -643,8 +663,32 @@ def _cli() -> None:
         set_daily_cap(args.daily_cap)
         print(f"[Quotas] Daily cap set to {args.daily_cap} leads.")
 
+    # ICP from natural language — Haiku generates NAF/dept/size/persona
+    # from a French description. Sets the args only when not already set
+    # explicitly by the user.
+    if args.icp_description:
+        from icp_from_nl import generate_icp_from_description
+        print(f"[ICP-NL] Generating ICP from: {args.icp_description[:80]}...")
+        icp = generate_icp_from_description(args.icp_description) or {}
+        if not icp:
+            print("[ICP-NL] Generation failed. Check ANTHROPIC_API_KEY.")
+            p.error("--icp-description failed to produce a valid ICP")
+        # Apply ICP fields only where user didn't override
+        if not args.naf and icp.get("naf_codes"):
+            args.naf = ",".join(icp["naf_codes"])
+            print(f"[ICP-NL] NAF set to: {args.naf}")
+        if not args.departement and icp.get("departements"):
+            args.departement = ",".join(icp["departements"])
+            print(f"[ICP-NL] departement set to: {args.departement}")
+        if not args.tranche_effectif and icp.get("tranches_effectif"):
+            args.tranche_effectif = ",".join(icp["tranches_effectif"])
+            print(f"[ICP-NL] tranche_effectif set to: {args.tranche_effectif}")
+        if not args.persona_role_hint and icp.get("persona"):
+            args.persona_role_hint = icp["persona"]
+            print(f"[ICP-NL] persona set to: {args.persona_role_hint}")
+
     if not any([args.query, args.naf, args.code_postal, args.departement, args.region]):
-        p.error("provide at least one filter (--query / --naf / --code-postal / ...)")
+        p.error("provide at least one filter (--query / --naf / --code-postal / --icp-description ...)")
 
     # Apply tenant flag for the duration of this process — lead_store reads it
     # from env. This way the rest of the code doesn't have to thread it through.
@@ -687,6 +731,8 @@ def _cli() -> None:
         generate_emails=args.generate_emails,
         sender_offer=args.sender_offer,
         sender_company=args.sender_company,
+        sender_pitch=args.sender_pitch,
+        target_icp_description=args.icp_description,
         paid_threshold=args.paid_threshold,
         max_candidates=args.max_candidates,
         raw_mode=args.raw_mode,

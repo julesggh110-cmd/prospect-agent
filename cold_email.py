@@ -149,12 +149,21 @@ def generate_cold_email(
     company_website: Optional[str] = None,
     sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
     sender_company: str = "Bear Brothers",
+    sender_pitch: Optional[str] = None,
+    target_icp_description: Optional[str] = None,
     model: str = "claude-haiku-4-5",
 ) -> Optional[ColdEmail]:
     """Generate a personalized cold email for one lead. None on failure.
 
-    `sender_offer` is the one-line description of what you're selling.
-    Default to Bear Brothers (spirits premium) — override per campaign.
+    Parameters:
+        sender_offer: 1-line value prop (e.g. "logiciel ERP cloud no-code").
+        sender_company: brand name (signed in the email body).
+        sender_pitch: OPTIONAL multi-line pitch the user wrote — adds detail
+            (use cases, differentiators, references). When provided, Claude
+            adapts the message tone and angle to match.
+        target_icp_description: OPTIONAL full ICP description the user gave
+            to icp_from_nl. Used to remind Claude what kind of prospect this is
+            (B2B SaaS vs CHR vs santé etc.) → adapts the tone accordingly.
     """
     if Anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
         return None
@@ -178,6 +187,8 @@ def generate_cold_email(
             "vendeur": {
                 "nom_entreprise": sender_company,
                 "offre": sender_offer,
+                "pitch_complet": sender_pitch or None,
+                "icp_cible_global": target_icp_description or None,
             },
         },
         ensure_ascii=False,
@@ -223,6 +234,8 @@ def generate_for_leads(
     *,
     sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
     sender_company: str = "Bear Brothers",
+    sender_pitch: Optional[str] = None,
+    target_icp_description: Optional[str] = None,
 ) -> dict[str, ColdEmail]:
     """Generate cold emails for a batch of Lead objects. Returns {siren: ColdEmail}.
 
@@ -257,6 +270,8 @@ def generate_for_leads(
             company_website=lead.company_website,
             sender_offer=sender_offer,
             sender_company=sender_company,
+            sender_pitch=sender_pitch,
+            target_icp_description=target_icp_description,
         )
         if email:
             out[lead.company_siren or lead.company_name] = email

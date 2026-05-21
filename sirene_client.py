@@ -212,21 +212,24 @@ class SireneClient:
         # CRITICAL: preserve the original siege in _original_siege so the
         # pipeline can detect when a "local" lead is actually a subsidiary
         # of a company headquartered elsewhere (decision-maker is at HQ).
+        # MULTI-DEPT support: code_postal and departement can be comma-separated
+        # ("31,34,33"). We accept a matching_etablissement if its CP starts
+        # with ANY of the requested codes / depts.
         if local_only and (code_postal or departement):
+            cp_prefixes = [s.strip() for s in str(code_postal).split(",")] if code_postal else []
+            dept_prefixes = [s.strip().zfill(2) for s in str(departement).split(",")] if departement else []
             for c in data.get("results", []):
                 matches = c.get("matching_etablissements") or []
                 if not matches:
                     continue
-                # Pick the first matching establishment whose address truly
-                # matches the requested filter
                 for m in matches:
                     mcp = m.get("code_postal") or ""
-                    if code_postal and mcp.startswith(str(code_postal)):
-                        c.setdefault("_original_siege", dict(c.get("siege") or {}))
-                        c["siege"] = _etab_to_siege(m, fallback=c.get("siege"))
-                        c.setdefault("_local_etab", m)
-                        break
-                    elif departement and mcp.startswith(str(departement).zfill(2)):
+                    accepted = False
+                    if cp_prefixes and any(mcp.startswith(p) for p in cp_prefixes):
+                        accepted = True
+                    elif dept_prefixes and any(mcp.startswith(p) for p in dept_prefixes):
+                        accepted = True
+                    if accepted:
                         c.setdefault("_original_siege", dict(c.get("siege") or {}))
                         c["siege"] = _etab_to_siege(m, fallback=c.get("siege"))
                         c.setdefault("_local_etab", m)
