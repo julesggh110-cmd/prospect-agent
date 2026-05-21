@@ -130,6 +130,16 @@ SERVICES: dict[str, dict] = {
         "period": "day",
         "credits_per_lead": 1,
     },
+    "francetravail": {
+        "label": "France Travail (job offers v2)",
+        # Officially documented as "100 req/min, no daily cap" per the
+        # 'Offres d'emploi v2' partner contract. We model it as a generous
+        # daily soft-limit so the dashboard surfaces usage without ever
+        # blocking a campaign.
+        "free_limit": 50_000,
+        "period": "day",
+        "credits_per_lead": 1,      # 1 search per SIRET per campaign
+    },
 }
 
 

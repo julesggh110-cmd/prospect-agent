@@ -53,6 +53,14 @@ HEADERS = [
     "person_linkedin", "person_linkedin_conf",
     "person_instagram", "person_instagram_conf",
     "overall_score",
+    # v0.14.0 — France Travail hiring signal (boîte qui recrute = budget IA)
+    "ft_hiring_intensity",   # high / medium / low / none / ""
+    "ft_n_offres",           # # offres in last 30 days
+    "ft_top_titles",         # top 3 job titles (joined with ' · ')
+    # v0.14.0 — Tech stack detection (Wappalyzer-LITE)
+    "tech_stack",            # one-line summary of detected tools
+    "tech_maturity",         # 0-100 maturity score
+    "primary_cms",           # WordPress / Webflow / Shopify / ...
     "is_new_lead",
     "lead_history",      # "new" / "déjà vu 3×" / "📅 meeting_booked il y a 5j"
     "quality_flags",     # junk-name / foreign-subsidiary / cross-company / etc.
@@ -114,6 +122,17 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         *scored(lead.person_linkedin),
         *scored(lead.person_instagram),
         lead.overall_score,
+        # v0.14.0 — France Travail hiring signal
+        getattr(lead, "ft_hiring_intensity", "") or "",
+        getattr(lead, "ft_n_offres", "") or "",
+        " · ".join((getattr(lead, "ft_top_titles", []) or [])[:3]),
+        # v0.14.0 — Tech stack one-line summary (e.g. "WordPress, HubSpot, Stripe")
+        ", ".join(
+            t.get("name", "") for t in (getattr(lead, "tech_stack", []) or [])
+            if isinstance(t, dict) and t.get("name")
+        )[:200],
+        getattr(lead, "tech_maturity", "") or "",
+        getattr(lead, "primary_cms", "") or "",
         "new" if getattr(lead, "is_new_lead", False) else "",
         history_str,
         ", ".join(getattr(lead, "quality_flags", []) or []),

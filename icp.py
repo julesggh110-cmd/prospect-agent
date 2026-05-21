@@ -106,6 +106,30 @@ def evaluate_rule(lead, rule: dict) -> bool:
         rc = getattr(lead, "gmb_rating_count", None)
         if rc is None or int(rc) < int(rule["gmb_review_count_above"]):
             return False
+    # v0.14.0 — tech_stack signals (set by Wappalyzer-LITE on the homepage)
+    # tech_signals_any: matches if AT LEAST ONE of the listed signals is set
+    # tech_signals_all: matches only when ALL listed signals are set
+    # Examples: {"tech_signals_any": ["has-automation","has-crm"]}
+    if "tech_signals_any" in rule:
+        sigs = set(getattr(lead, "tech_signals", []) or [])
+        if not (sigs & set(rule["tech_signals_any"])):
+            return False
+    if "tech_signals_all" in rule:
+        sigs = set(getattr(lead, "tech_signals", []) or [])
+        if not set(rule["tech_signals_all"]).issubset(sigs):
+            return False
+    if "tech_maturity_above" in rule:
+        tm = getattr(lead, "tech_maturity", 0) or 0
+        if int(tm) < int(rule["tech_maturity_above"]):
+            return False
+    # v0.14.0 — France Travail hiring signal (boîte qui recrute = budget IA)
+    # hiring_intensity_min: "low" | "medium" | "high"
+    if "hiring_intensity_min" in rule:
+        order = {"none": 0, "low": 1, "medium": 2, "high": 3}
+        threshold = order.get(rule["hiring_intensity_min"], 0)
+        actual = order.get(getattr(lead, "ft_hiring_intensity", None) or "", -1)
+        if actual < threshold:
+            return False
     return True
 
 

@@ -326,6 +326,20 @@ def enrich_company_from_website(url: str, *, fetch_team_page: bool = True,
             enrichment.twitter = extracted["twitter"]
             enrichment.youtube = extracted["youtube"]
 
+            # Tech stack detection from the homepage HTML (Wappalyzer-LITE)
+            try:
+                from tech_stack import detect_tech_from_html
+                tech = detect_tech_from_html(resp.text)
+                if tech and tech.get("stack"):
+                    # Stick on the enrichment as extra field
+                    # (model_config = extra='allow' so this passes through model_dump)
+                    enrichment.tech_stack = tech.get("stack")
+                    enrichment.tech_categories = tech.get("categories")
+                    enrichment.tech_signals = tech.get("signals")
+                    enrichment.primary_cms = tech.get("primary_cms")
+            except Exception:
+                pass
+
             # Helper to merge another page's extraction into the aggregate
             def _merge_page(page_url: str, page_extracted: dict, *, is_team: bool = False) -> None:
                 if page_url not in enrichment.pages_fetched:

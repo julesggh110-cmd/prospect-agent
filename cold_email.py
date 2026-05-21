@@ -112,6 +112,8 @@ Tu reçois :
 Règles non-négociables :
 - Tu écris en FRANÇAIS naturel, pas anglais, pas robot.
 - Tu personnalises avec au moins UN détail spécifique de leur site/secteur (jamais générique "j'ai vu votre site").
+- Si `entreprise.tech_stack_pitch_hint` est fourni, utilise-le pour cadrer l'offre — c'est un signal FACTUEL détecté sur leur site (ex: "vous utilisez déjà Zapier"). N'invente jamais un outil qui n'est pas dans le hint.
+- Si `entreprise.signal_recrutement` est fourni, c'est un timing trigger très puissant (ex: "12 offres en 30j"). Tu peux y faire référence subtilement ("vu votre rythme de recrutement actuel") mais sans citer le chiffre brut comme un commercial agressif.
 - Tu N'INVENTES JAMAIS de fait sur la boîte. Si le contexte est vide, écris un message clean sans fausse personnalisation.
 - Maximum 120 mots dans le body.
 - Subject line max 50 caractères, sans CAPS ni emojis ni "[URGENT]" ni clickbait.
@@ -151,6 +153,8 @@ def generate_cold_email(
     sender_company: str = "Bear Brothers",
     sender_pitch: Optional[str] = None,
     target_icp_description: Optional[str] = None,
+    tech_pitch_hint: Optional[str] = None,
+    ft_hiring_reason: Optional[str] = None,
     model: str = "claude-haiku-4-5",
 ) -> Optional[ColdEmail]:
     """Generate a personalized cold email for one lead. None on failure.
@@ -164,6 +168,12 @@ def generate_cold_email(
         target_icp_description: OPTIONAL full ICP description the user gave
             to icp_from_nl. Used to remind Claude what kind of prospect this is
             (B2B SaaS vs CHR vs santé etc.) → adapts the tone accordingly.
+        tech_pitch_hint: OPTIONAL one-liner from pitch_hint_from_tech() — uses
+            the prospect's detected stack (Zapier, HubSpot, Next.js…) to
+            personalise the opener without fabricating context.
+        ft_hiring_reason: OPTIONAL France Travail hiring-signal reason
+            ("12 offres en 30j — hyper-croissance"). Powerful timing trigger
+            for AI-training / outsourcing pitches.
     """
     if Anthropic is None or not os.environ.get("ANTHROPIC_API_KEY"):
         return None
@@ -183,6 +193,10 @@ def generate_cold_email(
                 "ville": company_city or "?",
                 "site_web": company_website or None,
                 "contexte_scraping": context or None,
+                # v0.14.0 — extra hooks (Claude doit les utiliser SI pertinents,
+                # jamais les inventer)
+                "tech_stack_pitch_hint": tech_pitch_hint or None,
+                "signal_recrutement": ft_hiring_reason or None,
             },
             "vendeur": {
                 "nom_entreprise": sender_company,
@@ -249,6 +263,12 @@ def generate_for_leads(
         print("[Cold-Email] ANTHROPIC_API_KEY not set in env; skipping. "
               "Add it to your .env, or run from a shell that has it.")
         return {}
+    # Lazy import to avoid circular dep at module load time
+    try:
+        from tech_stack import pitch_hint_from_tech
+    except Exception:
+        pitch_hint_from_tech = None  # type: ignore
+
     out: dict[str, ColdEmail] = {}
     for lead in leads:
         if getattr(lead, "dropped", False):
@@ -260,6 +280,21 @@ def generate_for_leads(
             continue
         first = parts[0]
         last = parts[-1]
+
+        # v0.14.0 — extract personalisation hooks from the lead extras
+        tech_hint = None
+        if pitch_hint_from_tech:
+            try:
+                tech_hint = pitch_hint_from_tech({
+                    "stack": getattr(lead, "tech_stack", []) or [],
+                    "categories": getattr(lead, "tech_categories", {}) or {},
+                    "signals": getattr(lead, "tech_signals", []) or [],
+                    "primary_cms": getattr(lead, "primary_cms", None),
+                })
+            except Exception:
+                tech_hint = None
+        ft_reason = getattr(lead, "ft_reason", None)
+
         email = generate_cold_email(
             person_first=first,
             person_last=last,
@@ -272,6 +307,8 @@ def generate_for_leads(
             sender_company=sender_company,
             sender_pitch=sender_pitch,
             target_icp_description=target_icp_description,
+            tech_pitch_hint=tech_hint,
+            ft_hiring_reason=ft_reason,
         )
         if email:
             out[lead.company_siren or lead.company_name] = email

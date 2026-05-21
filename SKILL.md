@@ -1,7 +1,7 @@
 ---
 name: prospect-agent
 description: Generate verified B2B prospect lists from a natural-language request. Returns decision-maker + email + phone + LinkedIn + Instagram per company, with confidence scores and provenance. Never invents data. Use when the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B".
-version: 0.8.0
+version: 0.14.0
 triggers:
   - prospection
   - prospects
@@ -78,6 +78,22 @@ Required at runtime: nothing — the agent works with zero keys (just slower).
 - `HUBSPOT_ACCESS_TOKEN` → push leads to HubSpot CRM.
 - `ANTHROPIC_API_KEY` → only for `--generate-emails` (cold email Haiku, ~$0.0015/lead).
 - `BRAVE_SEARCH_API_KEY` → legacy search backend (2k/month).
+- `FRANCETRAVAIL_CLIENT_ID` + `FRANCETRAVAIL_CLIENT_SECRET` → **100% free**. Hiring signals per SIRET (n_offres + intensity high/medium/low/none). When set, each lead is auto-scored on hiring activity (+20 ICP if high) — best timing trigger for AI-training / outsourcing pitches. https://francetravail.io/data
+
+## v0.14.0 — Tech stack + hiring signals (TIER 1)
+
+Two free signals now feed `preliminary_score` + `cold_email` personalisation:
+
+1. **Wappalyzer-LITE** (`tech_stack.py`) — pure-Python regex detection over the homepage HTML we already fetched. Detects ~50 tools (HubSpot, Stripe, Shopify, WordPress, Zapier/Make/n8n, Calendly, etc.) and surfaces categories: `has-crm`, `has-automation`, `has-payment`, etc. `pitch_hint_from_tech()` returns a 1-line opener Claude injects into cold emails ("Vous utilisez déjà Zapier : niveau 3 IA…").
+2. **France Travail** (`francetravail_client.py`) — official OAuth2 partner API, free. Returns active job offers per SIRET → classified into `high` (≥10), `medium` (4-9), `low` (1-3), `none`. Boîtes qui recrutent = budget formation IA disponible.
+
+New ICP rule types (use in `--icp-description` / preset rules):
+- `tech_signals_any: ["has-automation","has-crm"]`
+- `tech_signals_all: ["has-crm","has-analytics"]`
+- `tech_maturity_above: 40`
+- `hiring_intensity_min: "medium"`
+
+New XLSX columns: `ft_hiring_intensity`, `ft_n_offres`, `ft_top_titles`, `tech_stack`, `tech_maturity`, `primary_cms`.
 
 Run `python setup_wizard.py --check` to confirm. If a key is missing, tell the user the URL to get one (in `setup_wizard.py`).
 

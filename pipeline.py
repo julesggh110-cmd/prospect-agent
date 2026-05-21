@@ -32,6 +32,15 @@ from rich.console import Console
 
 from bettercontact_client import enrich_person as bettercontact_enrich, have_bettercontact_key
 from bodacc_client import qualify_from_bodacc
+from francetravail_client import (
+    have_francetravail_keys,
+    hiring_signal_for_siret,
+)
+from tech_stack import (
+    detect_tech_from_html,
+    maturity_score as tech_maturity_score,
+    pitch_hint_from_tech,
+)
 from datagma_client import find_full as datagma_find, have_datagma_key
 from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
@@ -243,6 +252,32 @@ def enrich_company_partial(sirene_company) -> dict:
             quality_flags.append(f"bodacc-boost:{bodacc_result.get('categories_found', [''])[0]}")
         elif verdict == "WATCHOUT":
             quality_flags.append("bodacc-watchout")
+
+    # FRANCE TRAVAIL hiring signal — boîte qui recrute = budget formation IA.
+    # Requires SIRET (establishment), so we pull from siege.siret which has
+    # been rewritten to the local matching_etablissement by sirene_client.
+    ft_signal: dict = {}
+    if have_francetravail_keys():
+        siret = None
+        if isinstance(siege, dict):
+            siret = siege.get("siret")
+        elif hasattr(siege, "siret"):
+            siret = getattr(siege, "siret", None)
+        if siret:
+            @_cached("francetravail", siret)
+            def _ft():
+                try:
+                    return hiring_signal_for_siret(siret)
+                except Exception:
+                    return None
+            ft_signal = _ft() or {}
+            intensity = ft_signal.get("hiring_intensity")
+            if intensity == "high":
+                quality_flags.append(f"hiring-high:{ft_signal.get('n_offres')}")
+            elif intensity == "medium":
+                quality_flags.append(f"hiring-medium:{ft_signal.get('n_offres')}")
+            elif intensity == "none":
+                quality_flags.append("hiring-none")
 
     # SUBSIDIARY DETECTION: if Sirene's ORIGINAL siege (HQ before local_only
     # rewrote it) is in a different department than the matched establishment,
@@ -583,6 +618,16 @@ def enrich_company_partial(sirene_company) -> dict:
         "bodacc_reason": bodacc_result.get("reason"),
         "bodacc_categories": bodacc_result.get("categories_found"),
         "bodacc_modifier": bodacc_result.get("icp_modifier") or 0,
+        # France Travail hiring signal (when API key set)
+        "ft_hiring_intensity": ft_signal.get("hiring_intensity"),
+        "ft_n_offres": ft_signal.get("n_offres"),
+        "ft_top_titles": ft_signal.get("top_titles"),
+        "ft_reason": ft_signal.get("reason"),
+        # Tech stack (always-on, from web_dict — Wappalyzer-LITE)
+        "tech_stack": (web_dict or {}).get("tech_stack"),
+        "tech_signals": (web_dict or {}).get("tech_signals"),
+        "tech_categories": (web_dict or {}).get("tech_categories"),
+        "primary_cms": (web_dict or {}).get("primary_cms"),
     }
 
 
@@ -729,6 +774,14 @@ def preliminary_score(partial: dict) -> int:
       +15 has company LinkedIn entreprise
       +15 has at least one dirigeant nominatif
       +10 has BODACC growth signal (augmentation capital, créations, etc.)
+      +20 France Travail hiring intensity = high (≥10 offres/30j)
+      +10 France Travail hiring intensity = medium (4-9 offres/30j)
+      +5  France Travail hiring intensity = low (1-3 offres/30j)
+      -5  France Travail hiring intensity = none (gel d'embauche)
+      +15 tech_stack has has-automation (Zapier/Make/n8n)
+      +10 tech_stack has has-crm (HubSpot/Salesforce/Pipedrive)
+      +5  tech_stack has has-framework (Next.js/React/Vue)
+      +2  per soft signal (payment, analytics, chat, compliance — cap +6)
       [If GMB-relevant NAF only:]
       +20 has GMB cuisine_type
       +15 has GMB rating >= 4.0
@@ -757,6 +810,30 @@ def preliminary_score(partial: dict) -> int:
     bodacc_verdict = partial.get("bodacc_verdict")
     if bodacc_verdict == "QUALITY_BOOST":
         score += 10
+
+    # FRANCE TRAVAIL hiring signal — boîte qui recrute = budget formation IA
+    # disponible. Strongest free signal we have for AI/training upsells.
+    ft_intensity = partial.get("ft_hiring_intensity")
+    if ft_intensity == "high":
+        score += 20      # 10+ offres → hyper-croissance
+    elif ft_intensity == "medium":
+        score += 10      # 4-9 offres → croissance soutenue
+    elif ft_intensity == "low":
+        score += 5       # 1-3 offres → recrutement modéré
+    elif ft_intensity == "none":
+        score -= 5       # 0 offre 30j → peut-être gel d'embauche
+
+    # TECH STACK signals — has-automation = AI-ready pour le niveau 3
+    tech_signals = set(partial.get("tech_signals") or [])
+    if "has-automation" in tech_signals:
+        score += 15      # Zapier/Make/n8n → équipe déjà sur l'automatisation
+    if "has-crm" in tech_signals:
+        score += 10      # HubSpot/Salesforce/Pipedrive → maturité B2B
+    if "has-framework" in tech_signals:
+        score += 5       # Next.js/React → équipe tech moderne
+    # has-payment / has-analytics / has-chat / has-compliance => +2 each (cap 6)
+    soft_signals = {"has-payment", "has-analytics", "has-chat", "has-compliance"}
+    score += min(6, 2 * len(tech_signals & soft_signals))
 
     # CHR/retail-only signals
     if gmb_relevant:
@@ -1361,6 +1438,22 @@ def finalize_lead(
         person_phone=person_phone_field,
         person_linkedin=li_field,
         person_instagram=ig_field,
+        # v0.14.0: extras (Lead.model_config = extra='allow') — surfaced in
+        # the XLSX export and used by cold_email.pitch_hint + ICP scoring.
+        tech_stack=partial.get("tech_stack") or [],
+        tech_signals=partial.get("tech_signals") or [],
+        tech_categories=partial.get("tech_categories") or {},
+        primary_cms=partial.get("primary_cms"),
+        tech_maturity=tech_maturity_score({
+            "stack": partial.get("tech_stack") or [],
+            "signals": partial.get("tech_signals") or [],
+        }) if (partial.get("tech_stack") or partial.get("tech_signals")) else 0,
+        ft_hiring_intensity=partial.get("ft_hiring_intensity"),
+        ft_n_offres=partial.get("ft_n_offres"),
+        ft_top_titles=partial.get("ft_top_titles") or [],
+        ft_reason=partial.get("ft_reason"),
+        bodacc_verdict=partial.get("bodacc_verdict"),
+        bodacc_reason=partial.get("bodacc_reason"),
     )
     lead.evaluate()
     return lead
