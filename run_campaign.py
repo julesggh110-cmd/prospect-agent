@@ -242,7 +242,21 @@ def run(
                     continue
                 chosen_first = chosen_first or parts[0]
                 chosen_last = chosen_last or parts[-1]
-            chosen_role = persona_role_hint or d.get("role") or ""
+            # CRITICAL: the REAL Sirene role wins. persona_role_hint is the
+            # role the user WANTED to find (e.g. "DRH") but when we fall back
+            # to the legal dirigeant, we must label them with their ACTUAL
+            # role (Président, Gérant, etc.) — NOT the requested persona.
+            # The persona hint is now used only as a last-resort label when
+            # Sirene gave no role at all.
+            real_role = d.get("role") or ""
+            chosen_role = real_role or persona_role_hint or ""
+            # If the user asked for a specific persona that we couldn't
+            # confirm, annotate sources so finalize_lead's downstream code
+            # knows this isn't a verified DRH/etc.
+            if persona_role_hint and real_role and real_role.lower() != persona_role_hint.lower():
+                chosen_sources = list(chosen_sources) + [
+                    f"role-fallback:{real_role.lower()}-not-{persona_role_hint.lower()}"
+                ]
 
         prelim = preliminary_score(p)
         prelim_scores.append((prelim, p["company_name"]))

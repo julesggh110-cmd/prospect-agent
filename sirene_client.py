@@ -208,7 +208,10 @@ class SireneClient:
         resp.raise_for_status()
         data = resp.json()
 
-        # Rewrite siege to the local establishment when local_only is True
+        # Rewrite siege to the local establishment when local_only is True.
+        # CRITICAL: preserve the original siege in _original_siege so the
+        # pipeline can detect when a "local" lead is actually a subsidiary
+        # of a company headquartered elsewhere (decision-maker is at HQ).
         if local_only and (code_postal or departement):
             for c in data.get("results", []):
                 matches = c.get("matching_etablissements") or []
@@ -219,10 +222,12 @@ class SireneClient:
                 for m in matches:
                     mcp = m.get("code_postal") or ""
                     if code_postal and mcp.startswith(str(code_postal)):
+                        c.setdefault("_original_siege", dict(c.get("siege") or {}))
                         c["siege"] = _etab_to_siege(m, fallback=c.get("siege"))
                         c.setdefault("_local_etab", m)
                         break
                     elif departement and mcp.startswith(str(departement).zfill(2)):
+                        c.setdefault("_original_siege", dict(c.get("siege") or {}))
                         c["siege"] = _etab_to_siege(m, fallback=c.get("siege"))
                         c.setdefault("_local_etab", m)
                         break

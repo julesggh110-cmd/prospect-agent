@@ -112,6 +112,8 @@ def enrich_company_partial(sirene_company) -> dict:
         city = c.city
         address = c.address_short
         size = c.tranche_effectif_salarie
+        # Pydantic model: original siege might be in extra dict
+        original_siege = (c.model_dump().get("_original_siege") or {}) if hasattr(c, 'model_dump') else {}
         dirs = []
         for d in c.dirigeants:
             if not d.full_name:
@@ -130,6 +132,9 @@ def enrich_company_partial(sirene_company) -> dict:
         siren = c.get("siren")
         naf = c.get("activite_principale")
         siege = c.get("siege") or {}
+        # ORIGINAL siege (before sirene_client rewrote it to the local
+        # establishment) — used to detect subsidiaries of out-of-area HQs.
+        original_siege = c.get("_original_siege") or {}
         city = siege.get("libelle_commune")
         address = ", ".join(
             x for x in [siege.get("adresse"), siege.get("code_postal"), siege.get("libelle_commune")] if x
@@ -214,6 +219,23 @@ def enrich_company_partial(sirene_company) -> dict:
             return ddg
         return None
     website = _find_site()
+
+    # Quality flags accumulated during enrichment — surfaced on the final Lead
+    quality_flags: list[str] = []
+
+    # SUBSIDIARY DETECTION: if Sirene's ORIGINAL siege (HQ before local_only
+    # rewrote it) is in a different department than the matched establishment,
+    # this lead is a SUBSIDIARY of a company headquartered elsewhere.
+    # Decision-makers for AI/training budgets are typically at HQ, not in
+    # the local branch.
+    try:
+        local_dept = (siege.get("code_postal") or "")[:2] if isinstance(siege, dict) else ""
+        original_dept = (original_siege.get("code_postal") or "")[:2] if isinstance(original_siege, dict) else ""
+        if original_dept and local_dept and original_dept != local_dept:
+            hq_city = original_siege.get("libelle_commune") or original_dept
+            quality_flags.append(f"subsidiary-hq:{hq_city}")
+    except Exception:
+        pass
 
     # 2b-d. OSM + GMB + HERE — these 3 sources are INDEPENDENT (none reads
     # the others' results). Run them in parallel via a small thread pool —
@@ -375,6 +397,24 @@ def enrich_company_partial(sirene_company) -> dict:
                     f"CROSS-COMPANY: LinkedIn slug '{li_slug}' "
                     f"does not match Sirene name '{name}'. Verify before use."
                 )
+        # Foreign-subsidiary detection: linkedin.com host like
+        # 'uk.linkedin.com', 'us.linkedin.com', 'in.linkedin.com' means the
+        # company is the LOCAL French presence of a foreign multinational
+        # → decision-makers (DRH, etc.) are NOT in Toulouse, they're in
+        # London/NYC/Bangalore. Flag and downgrade.
+        from urllib.parse import urlparse as _urlp2
+        host = (_urlp2(li_field.value).hostname or "").lower()
+        if host.endswith(".linkedin.com") and host != "www.linkedin.com":
+            tld_prefix = host.split(".linkedin.com")[0].split(".")[-1]
+            if tld_prefix not in ("fr", "www", "", "media"):
+                li_field.confidence = min(li_field.confidence, 25)
+                prev_note = li_field.note + " · " if li_field.note else ""
+                li_field.note = (
+                    f"{prev_note}FOREIGN SUBSIDIARY: LinkedIn TLD '{tld_prefix}' "
+                    f"= the French entity is a subsidiary of a foreign group. "
+                    f"Decision-maker is NOT in France."
+                )
+                quality_flags.append(f"foreign-subsidiary:{tld_prefix}")
     ig_field = triangulate_url(
         [(web_ig, website or "website"),
          (ig_search, "search:instagram-company")],
@@ -515,6 +555,8 @@ def enrich_company_partial(sirene_company) -> dict:
         "gmb_rating_count": gmb_data.get("rating_count"),
         "is_operating": gmb_data.get("is_operating"),
         "permanently_closed": gmb_data.get("permanently_closed"),
+        # Quality flags surfaced during partial enrichment
+        "quality_flags": quality_flags,
     }
 
 
@@ -575,6 +617,47 @@ def _name_in_linkedin_url(first: str, last: str, url: Optional[str]) -> bool:
     return False
 
 
+# Companies whose Sirene name matches one of these patterns are NOT real
+# private B2B prospects for AI training / consulting. They land in the NAF
+# 70.22Z bucket by accident (mis-classified), but are:
+#   - public agencies (ADEROC, agence de développement, agence économique)
+#   - unions / syndicats / federations professionnelles
+#   - mutuelles d'assurance (GALIAN, MAIF...)
+#   - peps syndicats salariés
+#   - chambres de commerce / d'agriculture / des métiers
+# Drop them via preliminary_score → cheap pass only → low ICP → bottom of list.
+_JUNK_NAME_RX = __import__("re").compile(
+    r"\b("
+    r"syndicat|union\s+(?:des|de|nationale|professionnelle)|"
+    r"f[eé]d[eé]ration|conf[eé]d[eé]ration|"
+    # Mutuelles d'assurance — by name or known abbreviations
+    r"mutuelle|maif|macif|matmut|harmonie|smabtp|sma\s|smacl|groupama|generali|"
+    # Public agencies / EPIC / EPA
+    r"agence\s+(?:de\s+)?(?:d[eé]veloppement|publique|r[eé]gionale|locale)|"
+    r"chambre\s+(?:de\s+commerce|d[''']agriculture|des?\s+m[eé]tiers)|"
+    r"ordre\s+des?\s+(?:experts?|m[eé]decins|avocats|architectes)|"
+    r"udife|adero?c|peps|"
+    r"comit[eé]\s+(?:r[eé]gional|d[eé]partemental|territorial)|"
+    r"^association\b|association\s+(?:nationale|fran[cç]aise|professionnelle)|"
+    r"office\s+(?:public|de\s+tourisme)|"
+    r"epic|epa|epcc|sem\s|sad\s"
+    r")\b",
+    __import__("re").IGNORECASE,
+)
+
+
+def is_junk_company_name(name: str) -> bool:
+    """True when the name strongly suggests this isn't a real private B2B
+    prospect (union, mutuelle, agence publique, etc.).
+
+    Used by preliminary_score to drop to cheap-pass + by ICP scoring to
+    apply a hard penalty.
+    """
+    if not name:
+        return False
+    return bool(_JUNK_NAME_RX.search(name))
+
+
 def preliminary_score(partial: dict) -> int:
     """Cheap-source-only 'is this lead worth paid enrichment' score (0-100).
 
@@ -584,6 +667,7 @@ def preliminary_score(partial: dict) -> int:
     (Dropcontact + Hunter + Datagma + BetterContact) to save credits.
 
     Rules (additive):
+      -100 if junk name (syndicat / mutuelle / agence publique / etc.)
       +30 has GMB cuisine_type (= confirmed operational real business)
       +20 has GMB rating >= 4.0 (= established, popular)
       +15 has GMB rating_count >= 20 (= real customer base, not phantom)
@@ -592,6 +676,9 @@ def preliminary_score(partial: dict) -> int:
       +5  has company LinkedIn
       +5  has at least one dirigeant nominatif
     """
+    # Hard reject: junk names are mis-classified entities. No paid enrichment.
+    if is_junk_company_name(partial.get("company_name", "")):
+        return 0
     score = 0
     if partial.get("cuisine_type"):
         score += 30
@@ -1187,6 +1274,7 @@ def finalize_lead(
         gmb_rating_count=partial.get("gmb_rating_count"),
         is_operating=partial.get("is_operating"),
         permanently_closed=partial.get("permanently_closed"),
+        quality_flags=list(partial.get("quality_flags") or []),
         company_linkedin=ScoredField(**partial["company_linkedin"]),
         company_instagram=ScoredField(**partial["company_instagram"]),
         company_phone=company_phone_field,

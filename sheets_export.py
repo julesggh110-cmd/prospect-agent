@@ -54,6 +54,7 @@ HEADERS = [
     "person_instagram", "person_instagram_conf",
     "overall_score",
     "is_new_lead",
+    "quality_flags",     # junk-name / foreign-subsidiary / cross-company / etc.
     # Research kit — 5 pre-built one-click URLs to fill missing data manually
     # (50% of FR SMB gérants have no public LinkedIn / mobile, so we let the
     # salesperson do a 30-second lookup themselves).
@@ -105,6 +106,7 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         *scored(lead.person_instagram),
         lead.overall_score,
         "new" if getattr(lead, "is_new_lead", False) else "",
+        ", ".join(getattr(lead, "quality_flags", []) or []),
         # Research kit URLs (always present, may be empty if data too thin)
         ru.get("linkedin_search") or "",
         ru.get("instagram_search") or "",

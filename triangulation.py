@@ -105,6 +105,10 @@ class Lead(BaseModel):
     person_linkedin: ScoredField = Field(default_factory=ScoredField.missing)
     person_instagram: ScoredField = Field(default_factory=ScoredField.missing)
 
+    # Quality flags surfaced from the pipeline (e.g. "junk-name",
+    # "foreign-subsidiary"). Free-form list shown in XLSX as a single column.
+    quality_flags: list[str] = Field(default_factory=list)
+
     # Pipeline metadata
     overall_score: int = 0
     dropped: bool = False
@@ -145,6 +149,19 @@ class Lead(BaseModel):
         if self.permanently_closed:
             self.dropped = True
             self.drop_reason = "permanently closed (Google My Business)"
+            return
+
+        # Hard drop: name matches junk patterns (syndicat, mutuelle, agence
+        # publique, etc.) — these aren't real private B2B prospects.
+        from pipeline import is_junk_company_name
+        if is_junk_company_name(self.company_name):
+            self.dropped = True
+            self.drop_reason = (
+                f"junk name pattern (not a real private B2B prospect: "
+                f"syndicat/mutuelle/agence publique/etc.)"
+            )
+            if "junk-name" not in self.quality_flags:
+                self.quality_flags.append("junk-name")
             return
         self.compute_overall()
         SMB_SIZES = {"00", "01", "02", "03", "11", "12", ""}
