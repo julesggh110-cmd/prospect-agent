@@ -286,6 +286,38 @@ class SireneClient:
         merged.results = results
         return merged
 
+    def iter_pages(
+        self,
+        *,
+        query: Optional[str] = None,
+        naf: Optional[str] = None,
+        code_postal: Optional[str] = None,
+        departement: Optional[str] = None,
+        region: Optional[str] = None,
+        tranche_effectif: Optional[str] = None,
+        local_only: bool = True,
+        max_pages: int = 20,
+    ):
+        """Generator: yields ONE Sirene page at a time.
+
+        Used by run_campaign's 'perfect mode': process page 1, filter, score,
+        if not enough qualified leads yet → process page 2, etc. Stops the
+        moment the caller breaks out of the loop. Saves API calls vs
+        search_many() which pulls everything before returning.
+        """
+        per_page = 25
+        for page in range(1, max_pages + 1):
+            resp = self.search(
+                query=query, naf=naf,
+                code_postal=code_postal, departement=departement, region=region,
+                tranche_effectif=tranche_effectif,
+                page=page, per_page=per_page,
+                local_only=local_only,
+            )
+            yield resp
+            if not resp.results or page >= resp.total_pages:
+                break
+
     def close(self) -> None:
         self._client.close()
 

@@ -97,6 +97,8 @@ def run(
     sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
     sender_company: str = "Bear Brothers",
     paid_threshold: int = 40,
+    max_candidates: int | None = None,
+    raw_mode: bool = False,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -154,35 +156,133 @@ def run(
                 sys.exit(2)
             volume = allowed
 
-    # 1. Source via Sirene — use paginated search so --volume > 25 works
-    # (Sirene caps each page at 25; without iteration, asking for 100 leads
-    # used to return 25).
-    with SireneClient() as c:
-        resp = c.search_many(
-            target=volume,
-            query=query,
-            naf=naf,
-            code_postal=code_postal,
-            departement=departement,
-            region=region,
-            tranche_effectif=tranche_effectif,
-        )
-    companies = resp.results[:volume]
-    if not companies:
-        print("No companies matched the query.")
-        sys.exit(1)
-    print(f"[Sirene] {len(companies)} companies")
+    # 1. Source via Sirene — PERFECT MODE: iterate pages, filter early,
+    # enrich the survivors, stop when `volume` QUALIFIED leads collected.
+    # Old behavior (--raw-mode) just fetches `volume` candidates and enriches
+    # all of them, regardless of quality.
+    from pipeline import is_junk_company_name, preliminary_score
 
-    # 1b. Dedup vs lead_store if requested
-    if only_new:
-        seen = already_seen_sirens([c.siren for c in companies])
-        companies = [c for c in companies if c.siren not in seen]
-        print(f"[Dedup] {len(seen)} already prospected, {len(companies)} new")
+    if raw_mode:
+        # Legacy: fetch volume candidates, no filtering
+        with SireneClient() as c:
+            resp = c.search_many(
+                target=volume, query=query, naf=naf,
+                code_postal=code_postal, departement=departement, region=region,
+                tranche_effectif=tranche_effectif,
+            )
+        companies = resp.results[:volume]
+        if not companies:
+            print("No companies matched the query.")
+            sys.exit(1)
+        print(f"[Sirene] {len(companies)} companies (raw mode — no quality gate)")
+        if only_new:
+            seen = already_seen_sirens([c.siren for c in companies])
+            companies = [c for c in companies if c.siren not in seen]
+            print(f"[Dedup] {len(seen)} already prospected, {len(companies)} new")
+        partials = enrich_companies_parallel(companies, max_workers=max_workers)
+        with_site = sum(1 for p in partials if p.get('website'))
+        print(f"[Enrich] {with_site}/{len(partials)} with website")
+    else:
+        # PERFECT MODE — iterate Sirene pages, gate by quality, stop at target
+        cap = max_candidates if max_candidates is not None else max(50, volume * 5)
+        print(f"[Perfect] target={volume} qualified leads · max candidates={cap}")
 
-    # 2. Parallel partial enrichment (Pappers + Brave + cache)
-    partials = enrich_companies_parallel(companies, max_workers=max_workers)
-    with_site = sum(1 for p in partials if p.get('website'))
-    print(f"[Enrich] {with_site}/{len(partials)} with website")
+        # Quality gate operating on partial enrichment data (cheap-source only).
+        # A "perfect" lead must pass ALL these:
+        #   - Not junk name
+        #   - Not permanently_closed (GMB)
+        #   - Has at least one nominatif dirigeant
+        #   - preliminary_score ≥ paid_threshold (or 40 by default)
+        # We DO NOT gate on foreign-subsidiary yet because that signal comes
+        # from company LinkedIn which is fetched in partial — but we keep
+        # those leads with low ICP score; the user sees them flagged.
+        def _is_qualified(p: dict) -> tuple[bool, str]:
+            if not p:
+                return False, "no partial"
+            if is_junk_company_name(p.get("company_name", "")):
+                return False, "junk-name"
+            if p.get("permanently_closed"):
+                return False, "GMB permanently_closed"
+            dirs = p.get("legal_dirigeants") or []
+            real_dirs = [d for d in dirs if d.get("first") and d.get("last")]
+            if not real_dirs:
+                return False, "no nominatif dirigeant"
+            score = preliminary_score(p)
+            if score < paid_threshold:
+                return False, f"preliminary_score {score} < {paid_threshold}"
+            # Reject leads whose company LinkedIn flags foreign subsidiary
+            flags = p.get("quality_flags") or []
+            if any(f.startswith("foreign-subsidiary:") for f in flags):
+                return False, "foreign-subsidiary"
+            return True, "ok"
+
+        partials: list = []
+        n_seen = 0
+        n_junk_pre = 0
+        n_failed_gate = 0
+        with SireneClient() as c:
+            for page_resp in c.iter_pages(
+                query=query, naf=naf,
+                code_postal=code_postal, departement=departement, region=region,
+                tranche_effectif=tranche_effectif,
+            ):
+                if n_seen >= cap:
+                    print(f"[Perfect] hit max_candidates ({cap}) — stopping")
+                    break
+                page_companies = page_resp.results
+                if not page_companies:
+                    break
+                # Pre-filter: junk names (no API cost)
+                pre_filtered = []
+                for sc in page_companies:
+                    n_seen += 1
+                    name = getattr(sc, "name", None) or (
+                        sc.get("nom_complet") if isinstance(sc, dict) else "?"
+                    )
+                    if is_junk_company_name(name):
+                        n_junk_pre += 1
+                        continue
+                    pre_filtered.append(sc)
+                # Dedup vs lead_store
+                if only_new and pre_filtered:
+                    sirens = [getattr(c0, "siren", None) or (
+                        c0.get("siren") if isinstance(c0, dict) else None
+                    ) for c0 in pre_filtered]
+                    seen = already_seen_sirens([s for s in sirens if s])
+                    pre_filtered = [c0 for c0, s in zip(pre_filtered, sirens)
+                                     if s not in seen]
+                if not pre_filtered:
+                    continue
+                # Enrich the survivors in parallel
+                batch_partials = enrich_companies_parallel(
+                    pre_filtered, max_workers=max_workers,
+                )
+                # Apply post-enrichment quality gate
+                for bp in batch_partials:
+                    ok, reason = _is_qualified(bp)
+                    if not ok:
+                        n_failed_gate += 1
+                        continue
+                    partials.append(bp)
+                    if len(partials) >= volume:
+                        break
+                print(f"[Perfect] page {page_resp.page}: "
+                      f"{len(partials)}/{volume} qualified "
+                      f"(seen {n_seen}, junk-pre {n_junk_pre}, "
+                      f"failed gate {n_failed_gate})")
+                if len(partials) >= volume:
+                    break
+                if n_seen >= cap:
+                    break
+        if not partials:
+            print("[Perfect] No qualified candidates found. Try widening filters.")
+            sys.exit(1)
+        with_site = sum(1 for p in partials if p.get('website'))
+        print(f"[Perfect FINAL] {len(partials)}/{volume} qualified leads kept "
+              f"({with_site} with website) · "
+              f"{n_seen} candidates scanned · "
+              f"{n_junk_pre} junk-name dropped early · "
+              f"{n_failed_gate} failed quality gate")
 
     # 3. Finalize each lead — Phase-1 default: take the first legal director.
     leads = []
@@ -456,7 +556,13 @@ def _cli() -> None:
                    help="Sirene size code: 00=0 emp, 01=1-2, 02=3-5, 03=6-9, "
                         "11=10-19, 12=20-49, 21=50-99, 22=100-199, 31=200-249, "
                         "32=250-499 (use 11 or 12 to target true SMBs and skip chains)")
-    p.add_argument("--volume", type=int, default=10, help="Number of leads to target (default 10)")
+    p.add_argument("--volume", type=int, default=10,
+                   help="Number of QUALIFIED leads to deliver (default 10). "
+                        "PERFECT MODE: the agent iterates Sirene pages and "
+                        "applies quality gates (junk-name, ICP, foreign-sub, "
+                        "operational status) until VOLUME perfect leads are "
+                        "collected — may scan up to --max-candidates Sirene "
+                        "entries to find them.")
     p.add_argument("--persona", dest="persona_role_hint",
                    help="Hint for the role label in the output (e.g., 'Gérant', 'DRH')")
     p.add_argument("--output", dest="output_stem",
@@ -495,6 +601,15 @@ def _cli() -> None:
                         "Hunter, Datagma, BetterContact). 0 = always pay. "
                         "Default 40 = skip the bottom ~30%% which we'd drop "
                         "anyway. Saves ~50%% paid credits.")
+    p.add_argument("--max-candidates", type=int, default=None,
+                   help="PERFECT MODE: safety cap on Sirene candidates "
+                        "scanned per run. Default = max(50, volume*5). "
+                        "Higher = better chance of hitting --volume but "
+                        "more API quota burned.")
+    p.add_argument("--raw-mode", action="store_true",
+                   help="DEBUG: disable PERFECT MODE quality gates. Returns "
+                        "the first `--volume` Sirene candidates regardless "
+                        "of quality. Use only to compare/debug.")
     p.add_argument("--quotas", action="store_true",
                    help="Print the current quota status and exit (no campaign).")
     p.add_argument("--generate-emails", action="store_true",
@@ -561,6 +676,8 @@ def _cli() -> None:
         sender_offer=args.sender_offer,
         sender_company=args.sender_company,
         paid_threshold=args.paid_threshold,
+        max_candidates=args.max_candidates,
+        raw_mode=args.raw_mode,
     )
 
 
