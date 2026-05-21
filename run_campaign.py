@@ -88,7 +88,8 @@ def run(
     output_stem: str | None = None,
     max_workers: int = 8,
     icp: dict | None = None,
-    only_new: bool = False,
+    only_new: bool = True,
+    include_outcomes: list[str] | None = None,
     push_to_hubspot: bool = False,
     campaign_id: str | None = None,
     llm_decider: bool = False,
@@ -582,8 +583,14 @@ def _cli() -> None:
                         "vegan/halal/cantine and boost gastro/bar/brasserie. "
                         "comeos-formation targets santé/médico-social/industrie/BTP "
                         "50-249 emp en Occitanie (Comeos QSE/RH training).")
-    p.add_argument("--only-new", action="store_true",
-                   help="Skip companies already in lead_store (dedup across runs)")
+    # Memory / dedup — ON BY DEFAULT in v0.12.3. Use --include-seen to override.
+    p.add_argument("--only-new", action="store_true", default=True,
+                   help="DEFAULT ON: skip SIRENs already in lead_store. "
+                        "Inverted by --include-seen.")
+    p.add_argument("--include-seen", dest="only_new", action="store_false",
+                   help="OPT-OUT of dedup: bring back leads already seen in "
+                        "previous campaigns. Useful for re-prospecting after "
+                        "N months or for outcome-tracking workflows.")
     p.add_argument("--push-to-hubspot", action="store_true",
                    help="Sync kept leads to HubSpot CRM (needs HUBSPOT_ACCESS_TOKEN)")
     p.add_argument("--campaign-id", help="Tag this run in lead_store")

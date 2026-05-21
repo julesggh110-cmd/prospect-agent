@@ -54,6 +54,7 @@ HEADERS = [
     "person_instagram", "person_instagram_conf",
     "overall_score",
     "is_new_lead",
+    "lead_history",      # "new" / "déjà vu 3×" / "📅 meeting_booked il y a 5j"
     "quality_flags",     # junk-name / foreign-subsidiary / cross-company / etc.
     # Research kit — 5 pre-built one-click URLs to fill missing data manually
     # (50% of FR SMB gérants have no public LinkedIn / mobile, so we let the
@@ -76,6 +77,14 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         ru = research_urls_for_lead(lead)
     except Exception:
         ru = {}
+
+    # Lead memory — how many times have we seen this SIREN, what's the outcome?
+    try:
+        from lead_store import get_lead_history, format_lead_history
+        hist = get_lead_history(lead.company_siren) if lead.company_siren else None
+        history_str = format_lead_history(hist)
+    except Exception:
+        history_str = ""
 
     return [
         getattr(lead, "icp_score", "") or "",
@@ -106,6 +115,7 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         *scored(lead.person_instagram),
         lead.overall_score,
         "new" if getattr(lead, "is_new_lead", False) else "",
+        history_str,
         ", ".join(getattr(lead, "quality_flags", []) or []),
         # Research kit URLs (always present, may be empty if data too thin)
         ru.get("linkedin_search") or "",
