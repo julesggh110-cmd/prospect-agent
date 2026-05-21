@@ -104,21 +104,31 @@ def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[list[
     if not token:
         return None
     _THROTTLE.acquire()
-    since = (datetime.now(timezone.utc) - timedelta(days=since_days)).date().isoformat()
+    # France Travail exige minCreationDate ET maxCreationDate ensemble
+    # (sinon HTTP 400 codeErreur 1779370566030). On encadre la fenêtre
+    # [now - since_days, now].
+    now = datetime.now(timezone.utc)
+    since_dt = now - timedelta(days=since_days)
+    min_date = since_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    max_date = now.strftime("%Y-%m-%dT%H:%M:%SZ")
     try:
         with httpx.Client(timeout=TIMEOUT) as c:
             r = c.get(
                 f"{API_BASE}/offres/search",
                 params={
                     "entreprise.siret": siret,
-                    "minCreationDate": f"{since}T00:00:00Z",
+                    "minCreationDate": min_date,
+                    "maxCreationDate": max_date,
                     "range": "0-49",
                 },
                 headers={"Authorization": f"Bearer {token}"},
             )
             if r.status_code == 204:   # no offers
                 return []
-            if r.status_code != 200:
+            # France Travail returns 206 Partial Content for paginated lists
+            # (Content-Range header), even when ALL results fit. So accept
+            # both 200 and 206 as success. Anything else is a real error.
+            if r.status_code not in (200, 206):
                 return None
             try:
                 from quotas import mark_used
