@@ -31,6 +31,7 @@ from typing import Iterable, Optional
 from rich.console import Console
 
 from bettercontact_client import enrich_person as bettercontact_enrich, have_bettercontact_key
+from bodacc_client import qualify_from_bodacc
 from datagma_client import find_full as datagma_find, have_datagma_key
 from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
@@ -222,6 +223,26 @@ def enrich_company_partial(sirene_company) -> dict:
 
     # Quality flags accumulated during enrichment — surfaced on the final Lead
     quality_flags: list[str] = []
+
+    # BODACC qualification — free public API, returns recent legal events.
+    # Hard-drops leads in redressement/liquidation/radiation; boosts those
+    # with augmentation de capital (= growing). Cached per SIREN.
+    bodacc_result: dict = {}
+    if siren:
+        @_cached("bodacc", siren)
+        def _bodacc():
+            try:
+                return qualify_from_bodacc(siren)
+            except Exception:
+                return None
+        bodacc_result = _bodacc() or {}
+        verdict = bodacc_result.get("verdict")
+        if verdict == "HARD_DROP":
+            quality_flags.append(f"bodacc-drop:{bodacc_result.get('categories_found', [''])[0]}")
+        elif verdict == "QUALITY_BOOST":
+            quality_flags.append(f"bodacc-boost:{bodacc_result.get('categories_found', [''])[0]}")
+        elif verdict == "WATCHOUT":
+            quality_flags.append("bodacc-watchout")
 
     # SUBSIDIARY DETECTION: if Sirene's ORIGINAL siege (HQ before local_only
     # rewrote it) is in a different department than the matched establishment,
@@ -557,6 +578,11 @@ def enrich_company_partial(sirene_company) -> dict:
         "permanently_closed": gmb_data.get("permanently_closed"),
         # Quality flags surfaced during partial enrichment
         "quality_flags": quality_flags,
+        # BODACC qualification (free public API — recent legal events)
+        "bodacc_verdict": bodacc_result.get("verdict"),
+        "bodacc_reason": bodacc_result.get("reason"),
+        "bodacc_categories": bodacc_result.get("categories_found"),
+        "bodacc_modifier": bodacc_result.get("icp_modifier") or 0,
     }
 
 

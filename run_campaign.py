@@ -203,6 +203,9 @@ def run(
                 return False, "junk-name"
             if p.get("permanently_closed"):
                 return False, "GMB permanently_closed"
+            # BODACC hard-drop: company in redressement / liquidation / radiation
+            if p.get("bodacc_verdict") == "HARD_DROP":
+                return False, f"BODACC: {p.get('bodacc_reason', 'in trouble')}"
             dirs = p.get("legal_dirigeants") or []
             real_dirs = [d for d in dirs if d.get("first") and d.get("last")]
             if not real_dirs:

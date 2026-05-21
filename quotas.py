@@ -124,6 +124,12 @@ SERVICES: dict[str, dict] = {
         "period": "day",
         "credits_per_lead": 2,      # 1 geocode + 1 overpass per lead
     },
+    "bodacc": {
+        "label": "BODACC (opendatasoft)",
+        "free_limit": 10_000,       # opendatasoft soft limit
+        "period": "day",
+        "credits_per_lead": 1,
+    },
 }
 
 
