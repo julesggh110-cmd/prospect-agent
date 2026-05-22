@@ -235,21 +235,19 @@ PRESET_PALACES_PARIS = {
     ],
 }
 
-# Bear Brothers — premium spirits brand selling into CHR (Café/Hôtel/Restaurant).
-# Uses Google My Business cuisine_type as the operational qualifier:
-#   - BOOST cuisines that pair with spirits (gastro, brasserie, italian, bar)
-#   - REJECT cuisines incompatible with alcohol (vegan, healthy, halal-only,
-#     student canteen)
-# This single ICP is what turns a generic "restos Toulouse" list into a
-# pre-qualified Bear Brothers prospect list.
-PRESET_BEAR_BROTHERS_CHR = {
-    "name": "Bear Brothers CHR (spiritueux premium)",
+# Generic CHR (Café/Hôtel/Restaurant) preset — utilise GMB cuisine_type pour
+# qualifier les restos/bars selon un dictionnaire alcool-compatible vs rejet.
+# Utile pour toute marque vendant à la restauration (spiritueux, vins, café,
+# matériel pro, etc.). Adapter cuisine_type_in / cuisine_type_not_in via
+# --icp-description si besoin.
+PRESET_CHR_ALCOOL_COMPATIBLE = {
+    "name": "CHR — cuisine compatible alcool (générique restos/bars)",
     "rules": [
-        # +30 if NAF is restaurant / café / bar
+        # +25 if NAF is restaurant / café / bar
         {"name": "CHR (restos/bars)", "weight": 25,
          "naf_starts_with": ["56.10", "56.30", "55.10"]},
-        # +20 if cuisine type pairs with spirits (Google My Business label)
-        {"name": "Cuisine compatible spiritueux", "weight": 20,
+        # +20 if cuisine type pairs with alcohol (Google My Business label)
+        {"name": "Cuisine compatible alcool", "weight": 20,
          "cuisine_type_in": [
              "français", "francaise", "francais",
              "brasserie", "bistro", "gastrono",
@@ -268,16 +266,16 @@ PRESET_BEAR_BROTHERS_CHR = {
              "cafétér", "cafeter", "fast food",
              "asiatique", "asian",  # often low-alcohol culture
          ]},
-        # +10 if Google rating ≥ 4.0 (established, popular = budget for premium)
+        # +10 if Google rating ≥ 4.0
         {"name": "Bien noté (≥4.0)", "weight": 10, "gmb_rating_above": 4.0},
-        # +10 if at least 50 reviews (real established business, not pop-up)
+        # +10 if at least 50 reviews
         {"name": "Établi (≥50 reviews)", "weight": 10, "gmb_review_count_above": 50},
-        # +10 if a website is published (means investment in branding)
+        # +5 if website
         {"name": "Site web actif", "weight": 5, "has_field": "company_website"},
-        # +5 if person LinkedIn — enables a warm DM pre-meeting
+        # +5 if person LinkedIn
         {"name": "LinkedIn décideur", "weight": 5,
          "has_field_confidence_above": {"person_linkedin": 60}},
-        # +5 if person email — direct mail channel
+        # +5 if person email
         {"name": "Email décideur", "weight": 5,
          "has_field_confidence_above": {"person_email": 40}},
     ],

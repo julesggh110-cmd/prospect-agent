@@ -188,8 +188,8 @@ def generate_cold_email(
     company_sector: str,
     company_city: Optional[str] = None,
     company_website: Optional[str] = None,
-    sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
-    sender_company: str = "Bear Brothers",
+    sender_offer: str = "",
+    sender_company: str = "",
     sender_pitch: Optional[str] = None,
     target_icp_description: Optional[str] = None,
     tech_pitch_hint: Optional[str] = None,
@@ -390,8 +390,8 @@ def _generate_breakup(
 def generate_for_leads(
     leads: list,
     *,
-    sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
-    sender_company: str = "Bear Brothers",
+    sender_offer: str = "",
+    sender_company: str = "",
     sender_pitch: Optional[str] = None,
     target_icp_description: Optional[str] = None,
     multi_touch: bool = False,
@@ -496,8 +496,10 @@ def _cli() -> None:
     p.add_argument("--sector", default="Restauration")
     p.add_argument("--city")
     p.add_argument("--website")
-    p.add_argument("--offer", default="spiritueux premium français pour cartes bars et restaurants")
-    p.add_argument("--sender", default="Bear Brothers")
+    p.add_argument("--offer", required=True,
+                   help="Description courte de votre offre (FR), ex: 'ERP cloud no-code'")
+    p.add_argument("--sender", required=True,
+                   help="Nom de votre entreprise (signée dans l'email)")
     args = p.parse_args()
     email = generate_cold_email(
         person_first=args.first, person_last=args.last,

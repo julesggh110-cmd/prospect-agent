@@ -28,7 +28,9 @@ python run_campaign.py \
   --icp-preset cavistes-paris \
   --only-new \
   --push-to-hubspot \
-  --generate-emails --sender-company "Bear Brothers" \
+  --generate-emails \
+  --sender-company "<YOUR_COMPANY>" \
+  --sender-offer "<one-line description of what you sell>" \
   --output cavistes-paris-1
 ```
 
@@ -168,10 +170,10 @@ python lead_store.py mark 408400547 unsubscribed
 python lead_store.py outcomes
 
 # ICP self-tuning report (needs ≥20 outcomes to suggest changes):
-python icp_tuner.py bear-brothers-chr
+python icp_tuner.py <preset-name>
 
 # Get the tuned ICP dict ready to use:
-python icp_tuner.py bear-brothers-chr --apply
+python icp_tuner.py <preset-name> --apply
 ```
 
 The tuner computes UPLIFT per rule: how much more likely a lead matching

@@ -2,7 +2,7 @@
 ICP Self-Tuner — adjust rule weights based on actual conversion data.
 
 Inputs:
-  - A baseline ICP preset (e.g. PRESET_BEAR_BROTHERS_CHR)
+  - A baseline ICP preset (e.g. any PRESET_* from icp.py)
   - The tenant's outcome history (from lead_store)
 
 Outputs:
@@ -220,7 +220,8 @@ def _cli() -> None:
     p = argparse.ArgumentParser(description="ICP self-tuning based on outcomes")
     p.add_argument(
         "preset",
-        choices=["cavistes-paris", "palaces-paris", "bear-brothers-chr"],
+        choices=["cavistes-paris", "palaces-paris", "chr-alcool-compatible",
+                 "pme-formation-qse", "eti-b2b-formation"],
         help="Which baseline ICP preset to analyze",
     )
     p.add_argument("--json", action="store_true",
@@ -230,14 +231,18 @@ def _cli() -> None:
     args = p.parse_args()
 
     from icp import (
-        PRESET_BEAR_BROTHERS_CHR,
         PRESET_CAVISTES_PREMIUM_PARIS,
+        PRESET_CHR_ALCOOL_COMPATIBLE,
+        PRESET_ETI_B2B_FORMATION,
         PRESET_PALACES_PARIS,
+        PRESET_PME_FORMATION_QSE,
     )
     icp = {
         "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
         "palaces-paris": PRESET_PALACES_PARIS,
-        "bear-brothers-chr": PRESET_BEAR_BROTHERS_CHR,
+        "chr-alcool-compatible": PRESET_CHR_ALCOOL_COMPATIBLE,
+        "pme-formation-qse": PRESET_PME_FORMATION_QSE,
+        "eti-b2b-formation": PRESET_ETI_B2B_FORMATION,
     }[args.preset]
 
     rep = analyze(icp)

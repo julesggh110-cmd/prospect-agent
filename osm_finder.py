@@ -6,9 +6,8 @@ fallback for FR SMBs because shopkeepers, restos, bars regularly add
 `phone`, `website`, `email`, `contact:instagram`, `contact:facebook` tags
 to their establishment node.
 
-Coverage in France is high for the visible-storefront sectors that matter
-for Bear Brothers: restaurants, bars, cafés, hôtels, cavistes, salons,
-boulangeries, etc.
+Coverage in France is high for the visible-storefront sectors:
+restaurants, bars, cafés, hôtels, cavistes, salons, boulangeries, etc.
 
 Approach:
 1. Geocode the city (Nominatim) to get a bbox/lat-lon.

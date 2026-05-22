@@ -37,8 +37,8 @@ We use this to:
   1. Resolve a REAL company_phone (Google's listing beats anything we scrape)
   2. Resolve the OFFICIAL website (Google has done the disambiguation for us)
   3. Surface a cuisine TYPE — wired into ICP qualification downstream
-     ("bar à cocktails" 4 stars premium = perfect Bear Brothers fit;
-      "restaurant végétarien" = drop)
+     (e.g. for an alcohol-compatible CHR ICP: "bar à cocktails" 4 stars
+      = strong fit, "restaurant végétarien" = drop)
   4. Validate the match is the right business via geo (city present) +
      name overlap.
 
@@ -275,7 +275,7 @@ def normalize_place(place: dict) -> dict:
         "longitude": place.get("longitude"),
         "cid": place.get("cid"),
         "place_id": place.get("placeId"),
-        # Operational signals (Bear Brothers ICP uses these)
+        # Operational signals (CHR ICPs use these)
         "opening_hours": place.get("openingHours") or place.get("hours"),
         "permanently_closed": perm_closed,
         "temporarily_closed": temp_closed,

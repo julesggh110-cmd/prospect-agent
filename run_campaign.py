@@ -175,8 +175,8 @@ def run(
     llm_decider: bool = False,
     retry_dropped: bool = False,
     generate_emails: bool = False,
-    sender_offer: str = "spiritueux premium français pour cartes bars et restaurants",
-    sender_company: str = "Bear Brothers",
+    sender_offer: str = "",
+    sender_company: str = "",
     sender_pitch: str | None = None,
     target_icp_description: str | None = None,
     paid_threshold: int = 40,
@@ -763,7 +763,7 @@ def _cli() -> None:
     p.add_argument("--max-workers", type=int, default=8,
                    help="Parallel enrichment workers (default 8)")
     p.add_argument("--icp-preset",
-                   choices=["cavistes-paris", "palaces-paris", "bear-brothers-chr",
+                   choices=["cavistes-paris", "palaces-paris", "chr-alcool-compatible",
                             "pme-formation-qse", "eti-b2b-formation"],
                    help="Apply a preset ICP profile and add icp_score column. "
                         "Presets are GENERIC templates — for client-specific "
@@ -771,7 +771,7 @@ def _cli() -> None:
                         "Available: "
                         "cavistes-paris (cavistes Paris), "
                         "palaces-paris (hôtellerie haut de gamme), "
-                        "bear-brothers-chr (CHR avec filtre cuisine_type), "
+                        "chr-alcool-compatible (CHR filtre cuisine_type alcool), "
                         "pme-formation-qse (PME 50-249 santé/BTP/industrie), "
                         "eti-b2b-formation (ETI 100-1999 services B2B générique, "
                         "exclut banques/assurances).")
@@ -826,10 +826,12 @@ def _cli() -> None:
     p.add_argument("--generate-emails", action="store_true",
                    help="Generate a personalized FR cold email per kept lead via "
                         "Claude Haiku. ~$0.0015/lead. Saved into the XLSX export.")
-    p.add_argument("--sender-offer", default="spiritueux premium français pour cartes bars et restaurants",
-                   help="One-line description of what you're selling (FR)")
-    p.add_argument("--sender-company", default="Bear Brothers",
-                   help="Your company name (signed/referenced in the email)")
+    p.add_argument("--sender-offer", default="",
+                   help="One-line description of what you're selling (FR). "
+                        "REQUIRED if --generate-emails is set.")
+    p.add_argument("--sender-company", default="",
+                   help="Your company name (signed/referenced in the email). "
+                        "REQUIRED if --generate-emails is set.")
     p.add_argument("--sender-pitch",
                    help="Multi-line detailed pitch describing your offer "
                         "(value prop, use cases, differentiators). Passed to "
@@ -904,8 +906,8 @@ def _cli() -> None:
     icp_profile = None
     if args.icp_preset:
         from icp import (
-            PRESET_BEAR_BROTHERS_CHR,
             PRESET_CAVISTES_PREMIUM_PARIS,
+            PRESET_CHR_ALCOOL_COMPATIBLE,
             PRESET_ETI_B2B_FORMATION,
             PRESET_PALACES_PARIS,
             PRESET_PME_FORMATION_QSE,
@@ -913,10 +915,18 @@ def _cli() -> None:
         icp_profile = {
             "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
             "palaces-paris": PRESET_PALACES_PARIS,
-            "bear-brothers-chr": PRESET_BEAR_BROTHERS_CHR,
+            "chr-alcool-compatible": PRESET_CHR_ALCOOL_COMPATIBLE,
             "pme-formation-qse": PRESET_PME_FORMATION_QSE,
             "eti-b2b-formation": PRESET_ETI_B2B_FORMATION,
         }[args.icp_preset]
+
+    # v0.15.5 — generic agent: when --generate-emails is set, --sender-company
+    # and --sender-offer are REQUIRED (no client-specific defaults).
+    if args.generate_emails:
+        if not args.sender_company or not args.sender_offer:
+            p.error("--generate-emails requires both --sender-company and "
+                    "--sender-offer (the agent has NO default sender — it must "
+                    "be specified per campaign).")
 
     # Parse v0.15 RFP flags
     rfp_keywords = (

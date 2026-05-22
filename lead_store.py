@@ -5,9 +5,8 @@ Purpose:
 - Dedup across runs (don't re-prospect the same SIREN twice).
 - Track lifecycle: when was each lead first seen? Has it been pushed to CRM?
 - Power "show me only NEW leads since last campaign" workflows.
-- **Multi-tenant**: every row carries a `tenant_id`. When the agent is sold to
-  multiple clients (Bear Brothers + Comeos + resold further), each tenant
-  sees only its own leads.
+- **Multi-tenant**: every row carries a `tenant_id`. When the agent is used
+  across multiple clients (or resold), each tenant sees only its own leads.
 - **GDPR**: ships with `delete_for_subject(person_email)` (right-to-erasure)
   and `purge_older_than(days)` (data minimisation).
 

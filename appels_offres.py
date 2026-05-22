@@ -76,7 +76,7 @@ CPV_PRESETS: dict[str, list[str]] = {
         "72600000",  # Services d'assistance informatique
         "79400000",  # Services de conseil commercial et gestion
     ],
-    # === Spiritueux / Boissons (Bear Brothers) ===
+    # === Spiritueux / Boissons (B2B brands selling to retail/CHR) ===
     "boissons_alcoolisees": [
         "15910000",  # Boissons alcoolisées distillées
         "15911000",  # Boissons spiritueuses

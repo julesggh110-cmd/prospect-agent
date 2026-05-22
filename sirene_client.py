@@ -181,9 +181,8 @@ class SireneClient:
         We use `inclure_etablissements=true` to get the matching establishments
         (the actual Lyon hotels) and, when `local_only=True` (default), we
         rewrite `siege` to point at the first matching establishment that's
-        actually in the requested geo. This gives Bear-Brothers-style local
-        prospection results: one Lyon hotel = one lead, even if the chain HQ
-        is elsewhere.
+        actually in the requested geo. This gives proper LOCAL prospection
+        results: one Lyon hotel = one lead, even if the chain HQ is elsewhere.
 
         Pass `local_only=False` to keep the HQ unchanged (useful when you want
         to prospect the chain itself, not each location).
