@@ -44,6 +44,76 @@ except ImportError:
     pass
 
 
+# v0.15.2 — re-order dirigeants so OPERATIONAL roles come first, statutory/
+# audit roles (commissaire, censeur, administrateur sans fonction) come last.
+# Without this, Sirene's order (alphabetical or random) often puts a
+# "Commissaire aux comptes suppléant" at index 0 and we pick him as decideur
+# instead of the real President / DG / Gérant.
+#
+# Tiers (higher = better):
+#   3 = operational chiefs (Président, DG, DGD, Gérant, Fondateur, Directeur*)
+#   2 = directors with portfolio (DRH, DAF, Directeur Formation, DSI…)
+#   1 = co-gérant, associé unique
+#   0 = administrator, board member (no formal exec function)
+#  -1 = auditor / statutory roles (commissaire, censeur, représentant permanent)
+_ROLE_PRIORITY_PATTERNS: list[tuple[int, tuple[str, ...]]] = [
+    (3, (
+        "president", "président",
+        "directeur general", "directeur général", "directrice generale", "directrice générale",
+        "directeur general delegue", "directeur général délégué",
+        "gerant", "gérant", "co-gerant", "co-gérant",
+        "fondateur", "fondatrice", "founder",
+        "ceo", "chief executive",
+    )),
+    (2, (
+        "directeur des ressources humaines", "drh",
+        "directeur formation", "directrice formation",
+        "directeur administratif et financier", "daf",
+        "directeur des systemes d'information", "directeur des systèmes d'information", "dsi",
+        "chief digital officer", "cdo",
+        "directeur transformation", "directeur innovation",
+        "directeur commercial", "directeur marketing", "directeur des opérations",
+        "directeur", "directrice",   # generic catch-all
+    )),
+    (1, (
+        "associe unique", "associé unique",
+        "entrepreneur individuel",
+    )),
+    (-1, (
+        "commissaire aux comptes", "commissaire au compte",
+        "commissaire aux comptes suppleant", "commissaire aux comptes suppléant",
+        "censeur",
+        "representant permanent", "représentant permanent",
+        "membre du conseil", "administrateur",   # board only, not exec
+    )),
+]
+
+
+def _role_priority(role: str) -> int:
+    """Return a priority tier for a Sirene role string. Higher = better
+    decision-maker. 0 if no match (unknown role)."""
+    if not role:
+        return 0
+    r = role.lower().strip()
+    # Sort patterns by specificity (longest first) so "directeur général
+    # délégué" matches before "directeur"
+    flat = [(tier, kw) for tier, kws in _ROLE_PRIORITY_PATTERNS for kw in kws]
+    flat.sort(key=lambda x: -len(x[1]))
+    for tier, kw in flat:
+        if kw in r:
+            return tier
+    return 0
+
+
+def _sort_dirigeants_by_decisionmaker_priority(dirs: list[dict]) -> list[dict]:
+    """Stable-sort the dirigeants list so the highest-tier decision-makers
+    come first. Auditors and censeurs are pushed to the bottom (tier -1)."""
+    return sorted(
+        dirs,
+        key=lambda d: -_role_priority(d.get("role", "")),
+    )
+
+
 def _summary(leads, kept_path: str, elapsed: float) -> None:
     kept = [l for l in leads if not l.dropped]
     dropped = [l for l in leads if l.dropped]
@@ -426,6 +496,10 @@ def run(
                 chosen_sources = decision.get("person_sources") or ["sirene", "llm-decider"]
 
         if not chosen_first or not chosen_last:
+            # v0.15.2 — reorder dirs so statutory/audit roles come LAST
+            # (Sirene listed "Commissaire aux comptes suppléant" first for
+            # AKSIS/Ladurée → we picked an auditor instead of the real boss).
+            dirs = _sort_dirigeants_by_decisionmaker_priority(dirs)
             d = dirs[0]
             chosen_first = d.get("first") or ""
             chosen_last = d.get("last") or ""

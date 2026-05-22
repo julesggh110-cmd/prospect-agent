@@ -369,6 +369,8 @@ PRESET_COMEOS_FORMATION = {
 #     pas de budget formation externe. EXCLUSION DURE.
 #   - 10/10 leads = lifecycle "legacy" (>5 ans) → à cette taille, c'est
 #     systématique. Le signal lifecycle est mort, on ne l'utilise PAS.
+#   - v0.15.2 — autotest Multica confirme: 6/6 leads en "legacy" pour ETI 100+.
+#     Aucune règle lifecycle_* dans ce preset (vérifié = correct).
 #   - 10/10 ft_hiring_intensity "high" (saturé HQ-agg). v0.15.1 met "saturated"
 #     pour ces cas → on n'utilise QUE high/medium réels (donc seules les
 #     vraies hyper-croissances ressortent).

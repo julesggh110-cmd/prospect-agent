@@ -267,10 +267,12 @@ def enrich_company_partial(sirene_company) -> dict:
         elif hasattr(siege, "siret"):
             siret = getattr(siege, "siret", None)
         if siret:
-            @_cached("francetravail", siret)
+            # v0.15.2 — passe le NAF pour le detector de saturation par secteur
+            naf_for_ft = naf
+            @_cached("francetravail", f"{siret}|{naf_for_ft or ''}")
             def _ft():
                 try:
-                    return hiring_signal_for_siret(siret)
+                    return hiring_signal_for_siret(siret, naf=naf_for_ft)
                 except Exception:
                     return None
             ft_signal = _ft() or {}
@@ -1267,14 +1269,39 @@ def finalize_lead(
     # PRIORITY 0: Mentions Légales explicitly named the director's email.
     # This is the strongest possible signal — legally published, attached
     # to the publisher of the site.
+    #
+    # v0.15.2 — sanity check: si l'email vient d'une page mis-attribuée
+    # (ex: website_finder a pointé sur la page Facebook d'un dirigeant
+    # → mentions_legales a extrait ericbleuze@facebook.com), on rejette.
+    # On réutilise _domain_matches_company qui vérifie qu'au moins un token
+    # significatif du nom entreprise apparaît dans le domaine email.
     if not email_field.value and person_email_supplement:
-        email_field = ScoredField(
-            value=person_email_supplement,
-            sources=["mentions-legales"],
-            confidence=90 if director_is_target else 70,
-            note="legal-publisher email" + (" (name matched)" if director_is_target else ""),
-        )
-        name_sources.append(f"mentions-email:{person_email_supplement}")
+        from email_pattern_engine import _domain_matches_company as _dmc
+        host_part = (person_email_supplement.split("@", 1)[-1] or "").lower()
+        co_name = partial.get("company_name") or ""
+        # Whitelist hosts génériques connus à BLACKLIST (jamais des emails pros)
+        _GENERIC_DOMAINS_BLACKLIST = {
+            "gmail.com", "yahoo.fr", "yahoo.com", "hotmail.fr", "hotmail.com",
+            "outlook.fr", "outlook.com", "live.fr", "wanadoo.fr", "free.fr",
+            "orange.fr", "sfr.fr", "laposte.net", "neuf.fr", "icloud.com",
+            "facebook.com", "instagram.com", "linkedin.com", "twitter.com",
+            "x.com", "youtube.com",
+        }
+        if host_part in _GENERIC_DOMAINS_BLACKLIST:
+            # Drop — c'est un email perso ou social, pas un email d'entreprise
+            pass
+        elif co_name and not _dmc(host_part, co_name):
+            # Cross-domain — le site sur lequel mentions_legales s'est appuyé
+            # n'appartient probablement pas à cette entreprise.
+            pass
+        else:
+            email_field = ScoredField(
+                value=person_email_supplement,
+                sources=["mentions-legales"],
+                confidence=90 if director_is_target else 70,
+                note="legal-publisher email" + (" (name matched)" if director_is_target else ""),
+            )
+            name_sources.append(f"mentions-email:{person_email_supplement}")
 
     if not email_field.value and domain and person_first and person_last:
         best, _ = find_best_email(person_first, person_last, domain)

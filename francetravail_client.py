@@ -158,7 +158,7 @@ def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[dict]
         return None
 
 
-def hiring_signal_for_siret(siret: str, *, since_days: int = 30) -> dict:
+def hiring_signal_for_siret(siret: str, *, since_days: int = 30, naf: Optional[str] = None) -> dict:
     """Classify hiring activity for a SIRET into a single signal dict.
 
     v0.15.1 — detects "HQ aggregation": when the API returns a very large
@@ -228,6 +228,16 @@ def hiring_signal_for_siret(siret: str, *, since_days: int = 30) -> dict:
     # if 3+ distinct ROME categories AND >30 offers, almost certainly mixed
     # subsidiary pool.
     if n_real >= 30 and len(out["top_rome_codes"]) >= 3:
+        is_saturated = True
+    # v0.15.2 — durcir pour les groupes massifs d'énergie / transport /
+    # logistique : ces secteurs ont des SIREN tête-de-réseau qui agrègent
+    # toutes leurs filiales (cas réel Q ENERGY FRANCE : 50 offres avec
+    # ROME = "Chef de partie" / "Préparateur livreur" → manifestement
+    # une autre filiale du groupe). Seuil abaissé à 2 ROME distincts.
+    naf_prefix = (naf or "")[:3]
+    if (n_real >= 50 and len(out["top_rome_codes"]) >= 2
+            and naf_prefix in ("35.", "49.", "52.", "30.")):
+        # 35.=énergie · 49.=transport · 52.=logistique · 30.=fab transport
         is_saturated = True
     out["is_saturated"] = is_saturated
 
