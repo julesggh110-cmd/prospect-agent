@@ -107,11 +107,21 @@ def _role_priority(role: str) -> int:
 
 def _sort_dirigeants_by_decisionmaker_priority(dirs: list[dict]) -> list[dict]:
     """Stable-sort the dirigeants list so the highest-tier decision-makers
-    come first. Auditors and censeurs are pushed to the bottom (tier -1)."""
-    return sorted(
-        dirs,
-        key=lambda d: -_role_priority(d.get("role", "")),
-    )
+    come first. Auditors and censeurs are pushed to the bottom (tier -1).
+
+    v0.15.3 — personnes morales (holdings qui président une SAS, ex: "Groupe
+    Moovéus" président d'AKSIS) sont reléguées tout en bas (tier -2) parce
+    qu'elles ne sont pas un humain joignable en cold outreach. Si seules des
+    PM existent, on les garde quand même (mieux que rien).
+    """
+    def _key(d: dict) -> tuple[int, int]:
+        # We sort ASCENDING. So smaller keys come FIRST.
+        # → real humans: key = (-tier, 0). Higher tier = smaller key = first.
+        # → personnes morales: key = (+infinity, 0) → always last.
+        if d.get("is_personne_morale"):
+            return (10_000, 0)     # very large → always last
+        return (-_role_priority(d.get("role", "")), 0)
+    return sorted(dirs, key=_key)
 
 
 def _summary(leads, kept_path: str, elapsed: float) -> None:

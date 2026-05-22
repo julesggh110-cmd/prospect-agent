@@ -131,12 +131,16 @@ def enrich_company_partial(sirene_company) -> dict:
             if not d.full_name:
                 continue
             cleaned = clean_person_name(d.full_name)
+            # v0.15.3 — flag personnes morales (holdings, SAS qui président une
+            # autre boîte). Pas exploitables en cold outreach (besoin d'un humain).
+            is_pm = bool(getattr(d, "denomination", None)) and not getattr(d, "nom", None)
             dirs.append({
                 "name": cleaned.display or d.full_name.strip(),
                 "raw_name": d.full_name.strip(),
                 "first": cleaned.first,
                 "last": cleaned.last,
                 "role": d.qualite or d.type_dirigeant or "",
+                "is_personne_morale": is_pm,
             })
     else:
         c = sirene_company
@@ -155,9 +159,18 @@ def enrich_company_partial(sirene_company) -> dict:
         date_creation = c.get("date_creation")
         dirs = []
         for d in (c.get("dirigeants") or []):
-            if not d.get("nom"):
+            # v0.15.3 — accept BOTH "nom" (personne physique) and "denomination"
+            # (personne morale) entries. We tag the latter so the decision-maker
+            # picker can deprioritize them (no human to cold-email).
+            nom = d.get("nom")
+            denom = d.get("denomination")
+            if not nom and not denom:
                 continue
-            raw = f"{d.get('prenoms','')} {d.get('nom','')}".strip()
+            is_pm = bool(denom) and not nom
+            if is_pm:
+                raw = denom
+            else:
+                raw = f"{d.get('prenoms','')} {nom}".strip()
             cleaned = clean_person_name(raw)
             dirs.append({
                 "name": cleaned.display or raw,
@@ -165,6 +178,7 @@ def enrich_company_partial(sirene_company) -> dict:
                 "first": cleaned.first,
                 "last": cleaned.last,
                 "role": d.get("qualite") or d.get("type_dirigeant") or "",
+                "is_personne_morale": is_pm,
             })
 
     # 1. Try Pappers FIRST — direct website, email, phone (skip the DDG guess).
