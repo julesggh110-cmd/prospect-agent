@@ -109,8 +109,8 @@ python run_campaign.py \
   --rfp-days 90 --rfp-montant-min 10000 \
   --volume 20 \
   --generate-emails --multi-touch \
-  --sender-company "Comeos" \
-  --output comeos-rfp-formation-ia
+  --sender-company "<YOUR_COMPANY>" \
+  --output rfp-formation-ia-<date>
 ```
 
 Each RFP is auto-attached to the lead (`rfp_active` field). The cold-email

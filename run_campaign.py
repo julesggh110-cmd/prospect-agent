@@ -764,15 +764,17 @@ def _cli() -> None:
                    help="Parallel enrichment workers (default 8)")
     p.add_argument("--icp-preset",
                    choices=["cavistes-paris", "palaces-paris", "bear-brothers-chr",
-                            "comeos-formation", "comeos-eti-formation"],
+                            "pme-formation-qse", "eti-b2b-formation"],
                    help="Apply a preset ICP profile and add icp_score column. "
-                        "bear-brothers-chr uses GMB cuisine_type to filter "
-                        "vegan/halal/cantine and boost gastro/bar/brasserie. "
-                        "comeos-formation targets santé/médico-social/industrie/BTP "
-                        "50-249 emp en Occitanie (Comeos QSE/RH training). "
-                        "comeos-eti-formation targets ETI 100-1999 sal en aéro/ESN/"
-                        "conseil/ingénierie/pharma (Comeos formation IA), EXCLUT "
-                        "banques/assurances (OPCO interne).")
+                        "Presets are GENERIC templates — for client-specific "
+                        "targeting, prefer --icp-description (natural language). "
+                        "Available: "
+                        "cavistes-paris (cavistes Paris), "
+                        "palaces-paris (hôtellerie haut de gamme), "
+                        "bear-brothers-chr (CHR avec filtre cuisine_type), "
+                        "pme-formation-qse (PME 50-249 santé/BTP/industrie), "
+                        "eti-b2b-formation (ETI 100-1999 services B2B générique, "
+                        "exclut banques/assurances).")
     # Memory / dedup — ON BY DEFAULT in v0.12.3. Use --include-seen to override.
     p.add_argument("--only-new", action="store_true", default=True,
                    help="DEFAULT ON: skip SIRENs already in lead_store. "
@@ -904,16 +906,16 @@ def _cli() -> None:
         from icp import (
             PRESET_BEAR_BROTHERS_CHR,
             PRESET_CAVISTES_PREMIUM_PARIS,
-            PRESET_COMEOS_ETI_FORMATION,
-            PRESET_COMEOS_FORMATION,
+            PRESET_ETI_B2B_FORMATION,
             PRESET_PALACES_PARIS,
+            PRESET_PME_FORMATION_QSE,
         )
         icp_profile = {
             "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
             "palaces-paris": PRESET_PALACES_PARIS,
             "bear-brothers-chr": PRESET_BEAR_BROTHERS_CHR,
-            "comeos-formation": PRESET_COMEOS_FORMATION,
-            "comeos-eti-formation": PRESET_COMEOS_ETI_FORMATION,
+            "pme-formation-qse": PRESET_PME_FORMATION_QSE,
+            "eti-b2b-formation": PRESET_ETI_B2B_FORMATION,
         }[args.icp_preset]
 
     # Parse v0.15 RFP flags

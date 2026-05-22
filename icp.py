@@ -284,21 +284,21 @@ PRESET_BEAR_BROTHERS_CHR = {
 }
 
 
-# Comeos — Toulouse-based QSE consulting + training firm. Triple cert
-# (management, RH, santé-sécurité au travail, qualité, pratiques pro santé).
+# Generic PME formation QSE / HSE / RH preset.
 # Target: French SMBs 50-249 employees whose business creates obligatory
-# QSE / HSE / RH training spend.
+# QSE / HSE / RH training spend (or any cabinet de formation cible).
+# Adapt via --icp-description for client-specific cases.
 # Prioritization order:
-#   1. Santé / médico-social (Comeos' deepest expertise) — EHPAD, hébergement
-#      social, cabinets médicaux. NAF 87.10*, 87.30*, 86.21Z, 86.22*.
+#   1. Santé / médico-social — EHPAD, hébergement social, cabinets médicaux.
+#      NAF 87.10*, 87.30*, 86.21Z, 86.22*.
 #   2. Industrie — fab. métallique, machines, agro. NAF 25.*, 28.*, 10.*, 11.*.
 #   3. BTP — formation sécurité obligatoire. NAF 41.20*, 43.*.
 #   4. Services B2B — emploi/intérim (78.*), services bât. (81.*), SSII (62.*).
 # Geo: Occitanie en priorité (31, 09, 11, 12, 30, 32, 34, 46, 48, 65, 66, 81,
 # 82) puis grand sud-ouest. Bonus pour entreprise avec site/LinkedIn (maturité
 # RH = budget formation existant).
-PRESET_COMEOS_FORMATION = {
-    "name": "Comeos — Formation/QSE PME 50-249",
+PRESET_PME_FORMATION_QSE = {
+    "name": "PME 50-249 — formation QSE/RH/santé (générique)",
     "rules": [
         # Sector fit: tiered weights, only the best-fit tier scores
         {"name": "Santé/médico-social (EHPAD, hébergement, cabinets)",
@@ -363,26 +363,25 @@ PRESET_COMEOS_FORMATION = {
 }
 
 
-# v0.15.1 — preset dédié aux grandes structures privées (ETI 200-1999 sal)
-# Tiré de l'audit campagne "comeos-200plus-sud-1" (mai 2026) :
-#   - 8/10 leads = banques (NAF 64.19Z) → ont leur OPCO BPCE/CA interne,
-#     pas de budget formation externe. EXCLUSION DURE.
-#   - 10/10 leads = lifecycle "legacy" (>5 ans) → à cette taille, c'est
-#     systématique. Le signal lifecycle est mort, on ne l'utilise PAS.
-#   - v0.15.2 — autotest Multica confirme: 6/6 leads en "legacy" pour ETI 100+.
-#     Aucune règle lifecycle_* dans ce preset (vérifié = correct).
-#   - 10/10 ft_hiring_intensity "high" (saturé HQ-agg). v0.15.1 met "saturated"
-#     pour ces cas → on n'utilise QUE high/medium réels (donc seules les
-#     vraies hyper-croissances ressortent).
-#   - Tech maturity 0/10 > 25 → on baisse à 20 pour avoir un signal qui fire.
+# Generic ETI mid-market preset (B2B services, formation, conseil, SaaS, …)
+# Tiré d'un audit réel sur 4 campagnes (mai 2026) :
+#   - À 200+ salariés, les banques (NAF 64.*) et mutuelles (65./66.) ont
+#     leur OPCO interne BPCE/CA/Harmonie → NE consomment PAS de services
+#     externes de formation/conseil. EXCLUSION DURE.
+#   - À cette taille, lifecycle_stage est toujours "legacy" → ne fournit
+#     aucun signal discriminant. Aucune règle lifecycle_* dans ce preset.
+#   - France Travail signal souvent "saturated" sur les SIREN tête-de-réseau
+#     (HQ-aggregation des filiales). v0.15.1+ détecte et neutralise ces cas.
 #
-# Public cible Comeos formation IA :
+# Public cible générique :
 #   - ETI mid-market 100-1999 salariés (tranche 22, 31, 32, 41, 42)
-#   - Secteurs où la formation IA générique CONVERTIT : aéro, ESN, conseil,
-#     ingénierie, expertise comptable, pharma, cosmétique, agro premium.
-#   - Exclus : banque/assurance/mutuelle (OPCO interne), public, syndicats.
-PRESET_COMEOS_ETI_FORMATION = {
-    "name": "Comeos — Formation IA / ETI privées 100-1999 sal",
+#   - Secteurs B2B-mature : aéro, ESN/SaaS, conseil, ingénierie, expertise
+#     comptable, pharma, cosmétique, agro, énergie.
+#   - Exclus : banque/assurance/mutuelle, public, syndicats.
+# Pour customiser à un client précis, passe --icp-description (NL) plutôt
+# que de modifier ce preset.
+PRESET_ETI_B2B_FORMATION = {
+    "name": "ETI 100-1999 sal — B2B services / formation (générique)",
     "rules": [
         # === EXCLUSIONS DURES (hard filter — désactive le lead s'il match) ===
         {"name": "EXCLURE banque / assurance / mutuelle (OPCO interne)",
@@ -457,14 +456,14 @@ def _cli() -> None:
     p = argparse.ArgumentParser(description="Print a preset ICP profile or score one lead.")
     p.add_argument("preset", choices=[
         "cavistes-paris", "palaces-paris",
-        "comeos-formation", "comeos-eti-formation",
+        "pme-formation-qse", "eti-b2b-formation",
     ])
     args = p.parse_args()
     presets = {
         "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
         "palaces-paris": PRESET_PALACES_PARIS,
-        "comeos-formation": PRESET_COMEOS_FORMATION,
-        "comeos-eti-formation": PRESET_COMEOS_ETI_FORMATION,
+        "pme-formation-qse": PRESET_PME_FORMATION_QSE,
+        "eti-b2b-formation": PRESET_ETI_B2B_FORMATION,
     }
     print(json.dumps(presets[args.preset], indent=2, ensure_ascii=False))
 

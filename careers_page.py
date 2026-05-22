@@ -5,7 +5,8 @@ postes cadres SaaS / conseil publiés directement sur le site).
 
 Pourquoi ce signal est gold pour la prospection :
 - Une PME qui RECRUTE un AI Engineer, Data Scientist, Product, Sales =
-  TILT MAX pour Comeos (formation IA / automatisation).
+  TILT MAX pour les ventes "formation IA / automatisation / SaaS / conseil
+  transformation" (générique, à customiser via le prompt côté client).
 - Les rôles tech/cadre sont sur le site, PAS sur France Travail (qui
   héberge ~80% d'ouvriers, employés, agents publics).
 - Les rôles ouverts donnent une idée précise de la phase de croissance
@@ -65,7 +66,7 @@ _JOB_PAGE_HINTS = re.compile(
     re.IGNORECASE,
 )
 
-# Tech / IA roles that trigger the TILT for Comeos pitch
+# Tech / IA roles that trigger the TILT for IA-training / automation pitches
 _TECH_ROLE_PATTERNS: dict[str, re.Pattern] = {
     "ai": re.compile(
         r"\b(?:ai\s+engineer|ml\s+engineer|machine\s+learning|"
