@@ -130,6 +130,12 @@ SERVICES: dict[str, dict] = {
         "period": "day",
         "credits_per_lead": 1,
     },
+    "boamp": {
+        "label": "BOAMP (appels d'offres publics)",
+        "free_limit": 10_000,       # opendatasoft soft limit, generous
+        "period": "day",
+        "credits_per_lead": 0,      # not per-lead — used for sourcing
+    },
     "francetravail": {
         "label": "France Travail (job offers v2)",
         # Officially documented as "100 req/min, no daily cap" per the

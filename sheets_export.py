@@ -61,6 +61,20 @@ HEADERS = [
     "tech_stack",            # one-line summary of detected tools
     "tech_maturity",         # 0-100 maturity score
     "primary_cms",           # WordPress / Webflow / Shopify / ...
+    # v0.15.0 — Careers page (recrutement direct site)
+    "careers_url",
+    "careers_n_jobs",
+    "careers_top_titles",    # 3 first, joined with ' · '
+    "careers_tilt",          # ai/data/automation/tech/sales/marketing (comma)
+    # v0.15.0 — Lifecycle stage (Sirene date_creation)
+    "lifecycle_stage",       # very-early / scaling / mature / legacy
+    "company_age_months",
+    # v0.15.0 — Appels d'offres (intent signal max)
+    "rfp_id",                # BOAMP idweb
+    "rfp_titre",             # short
+    "rfp_deadline",
+    "rfp_montant_eur",
+    "rfp_url",
     "is_new_lead",
     "lead_history",      # "new" / "déjà vu 3×" / "📅 meeting_booked il y a 5j"
     "quality_flags",     # junk-name / foreign-subsidiary / cross-company / etc.
@@ -71,6 +85,9 @@ HEADERS = [
     "research_pagesjaunes", "research_societecom",
     # Cold email (only filled when --generate-emails was passed)
     "cold_email_subject", "cold_email_body", "cold_email_angle",
+    # v0.15.0 — Follow-up J+4 + Break-up J+10 (only filled with --multi-touch)
+    "cold_email_followup_subject", "cold_email_followup_body",
+    "cold_email_breakup_subject", "cold_email_breakup_body",
     "dropped", "drop_reason",
 ]
 
@@ -133,6 +150,21 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         )[:200],
         getattr(lead, "tech_maturity", "") or "",
         getattr(lead, "primary_cms", "") or "",
+        # v0.15.0 — Careers page
+        getattr(lead, "careers_url", "") or "",
+        getattr(lead, "careers_n_jobs", "") or "",
+        " · ".join((getattr(lead, "careers_top_titles", []) or [])[:3]),
+        ",".join(getattr(lead, "careers_tilt_categories", []) or []),
+        # v0.15.0 — Lifecycle stage
+        getattr(lead, "lifecycle_stage", "") or "",
+        getattr(lead, "company_age_months", "") or "",
+        # v0.15.0 — Appel d'offres actif
+        (getattr(lead, "rfp_active", {}) or {}).get("idweb") or "",
+        ((getattr(lead, "rfp_active", {}) or {}).get("titre_marche")
+            or (getattr(lead, "rfp_active", {}) or {}).get("objet") or "")[:160],
+        (getattr(lead, "rfp_active", {}) or {}).get("deadline_date") or "",
+        (getattr(lead, "rfp_active", {}) or {}).get("montant_estime_eur") or "",
+        (getattr(lead, "rfp_active", {}) or {}).get("url_avis") or "",
         "new" if getattr(lead, "is_new_lead", False) else "",
         history_str,
         ", ".join(getattr(lead, "quality_flags", []) or []),
@@ -145,6 +177,11 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         getattr(lead, "cold_email_subject", "") or "",
         getattr(lead, "cold_email_body", "") or "",
         getattr(lead, "cold_email_angle", "") or "",
+        # v0.15.0 — Multi-touch sequence (J+4 + J+10)
+        getattr(lead, "cold_email_followup_subject", "") or "",
+        getattr(lead, "cold_email_followup_body", "") or "",
+        getattr(lead, "cold_email_breakup_subject", "") or "",
+        getattr(lead, "cold_email_breakup_body", "") or "",
         "yes" if lead.dropped else "",
         lead.drop_reason or "",
     ]

@@ -1,7 +1,7 @@
 ---
 name: prospect-agent
 description: Generate verified B2B prospect lists from a natural-language request. Returns decision-maker + email + phone + LinkedIn + Instagram per company, with confidence scores and provenance. Never invents data. Use when the user asks to find leads, prospects, decision-makers, "trouve-moi des contacts", "génère une liste de prospects B2B".
-version: 0.14.0
+version: 0.15.0
 triggers:
   - prospection
   - prospects
@@ -94,6 +94,59 @@ New ICP rule types (use in `--icp-description` / preset rules):
 - `hiring_intensity_min: "medium"`
 
 New XLSX columns: `ft_hiring_intensity`, `ft_n_offres`, `ft_top_titles`, `tech_stack`, `tech_maturity`, `primary_cms`.
+
+## v0.15.0 — Intent signals + multi-touch + RFP-mode
+
+### Appels d'offres BOAMP (signal d'intention max) 🔥
+
+Source prospects directly from active public RFPs matching your offer.
+LE signal d'intention d'achat le plus fort qui existe.
+
+```bash
+python run_campaign.py \
+  --rfp-cpv-preset formation_ia \
+  --rfp-regions "Occitanie,Nouvelle-Aquitaine" \
+  --rfp-days 90 --rfp-montant-min 10000 \
+  --volume 20 \
+  --generate-emails --multi-touch \
+  --sender-company "Comeos" \
+  --output comeos-rfp-formation-ia
+```
+
+Each RFP is auto-attached to the lead (`rfp_active` field). The cold-email
+prompt then **references the RFP explicitly** ("vu votre récent appel à
+projet sur X"). Pure gold for conversion.
+
+### Multi-touch sequence (J0 + J+4 + J+10) 🚀
+
+```bash
+python run_campaign.py ... --generate-emails --multi-touch
+```
+
+Generates 3 emails per lead in one go: cold + follow-up + break-up.
+Multiplies response rate by 3-4×. Cost: ~$0.005/lead instead of $0.0015.
+XLSX gets 6 extra columns (subject + body per touch).
+
+### Careers page scraping 🎯
+
+Auto-detects `/careers`, `/jobs`, `/recrutement`, etc. on the prospect's
+site. Extracts open job titles. Strong TILT if AI / Data / Automation
+roles detected (+30 ICP boost) — captures cadre roles that France Travail
+doesn't carry.
+
+### Lifecycle stage (Sirene age) ⏱️
+
+Auto-classifies into: `very-early` (<6mo), `scaling` (6-24mo, +15 ICP),
+`mature` (2-5yr), `legacy` (>5yr). Filter via `lifecycle_stage_in` in ICP.
+
+### New ICP rule types
+
+- `careers_tilt_any: ["ai","data","automation"]`
+- `careers_tilt_all: ["data","automation"]`
+- `careers_min_jobs: 3`
+- `lifecycle_stage_in: ["scaling"]`
+- `company_age_max_months: 24`
+- `has_active_rfp: true`
 
 Run `python setup_wizard.py --check` to confirm. If a key is missing, tell the user the URL to get one (in `setup_wizard.py`).
 

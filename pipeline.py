@@ -41,6 +41,7 @@ from tech_stack import (
     maturity_score as tech_maturity_score,
     pitch_hint_from_tech,
 )
+from careers_page import scan_careers_for
 from datagma_client import find_full as datagma_find, have_datagma_key
 from dropcontact_client import enrich_person as dropcontact_enrich, have_dropcontact_key
 from email_finder import find_best_email
@@ -122,6 +123,7 @@ def enrich_company_partial(sirene_company) -> dict:
         city = c.city
         address = c.address_short
         size = c.tranche_effectif_salarie
+        date_creation = getattr(c, "date_creation", None)
         # Pydantic model: original siege might be in extra dict
         original_siege = (c.model_dump().get("_original_siege") or {}) if hasattr(c, 'model_dump') else {}
         dirs = []
@@ -150,6 +152,7 @@ def enrich_company_partial(sirene_company) -> dict:
             x for x in [siege.get("adresse"), siege.get("code_postal"), siege.get("libelle_commune")] if x
         )
         size = c.get("tranche_effectif_salarie")
+        date_creation = c.get("date_creation")
         dirs = []
         for d in (c.get("dirigeants") or []):
             if not d.get("nom"):
@@ -385,21 +388,40 @@ def enrich_company_partial(sirene_company) -> dict:
     def _ig_search_fn():
         return find_instagram_for_company(name, city)
 
+    # v0.15.0 — careers page scan (free, parallel with the other web fetches)
+    @_cached("careers", website or "no_site")
+    def _careers_fn():
+        if not website:
+            return None
+        try:
+            return scan_careers_for(website)
+        except Exception:
+            return None
+
     web_dict: Optional[dict] = None
     mentions: dict = {}
     li_search: Optional[str] = None
     ig_search: Optional[str] = None
-    with _PartialTPE(max_workers=4) as exe:
+    careers_data: Optional[dict] = None
+    with _PartialTPE(max_workers=5) as exe:
         futs = {
             "web":      exe.submit(_scrape),
             "mentions": exe.submit(_mentions_fn),
             "li_co":    exe.submit(_li_search_fn),
             "ig_co":    exe.submit(_ig_search_fn),
+            "careers":  exe.submit(_careers_fn),
         }
         web_dict = futs["web"].result()
         mentions = futs["mentions"].result() or {}
         li_search = futs["li_co"].result()
         ig_search = futs["ig_co"].result()
+        careers_data = futs["careers"].result()
+
+    # v0.15.0 — surface careers signal as a quality_flag for visibility
+    if careers_data and careers_data.get("tilt_categories"):
+        tcats = careers_data["tilt_categories"]
+        if any(c in ("ai", "data", "automation") for c in tcats):
+            quality_flags.append(f"tilt:tech-hiring:{','.join(tcats)}")
 
     # Pull the bits we need out of the scraped dict
     web_li = (web_dict or {}).get("linkedin_company")
@@ -583,6 +605,27 @@ def enrich_company_partial(sirene_company) -> dict:
                  (ig_field.value, ig_field.sources[0] if ig_field.sources else "ig")],
             )
 
+    # v0.15.0 — lifecycle stage from Sirene date_creation
+    company_age_months: Optional[int] = None
+    lifecycle_stage: Optional[str] = None
+    if date_creation:
+        try:
+            from datetime import datetime as _dt
+            d = _dt.strptime(date_creation[:10], "%Y-%m-%d")
+            now = _dt.now()
+            months = (now.year - d.year) * 12 + (now.month - d.month)
+            company_age_months = max(0, months)
+            if months < 6:
+                lifecycle_stage = "very-early"          # < 6 mois : trop tôt
+            elif months < 24:
+                lifecycle_stage = "scaling"             # 6-24 mois : TILT
+            elif months < 60:
+                lifecycle_stage = "mature"              # 2-5 ans
+            else:
+                lifecycle_stage = "legacy"              # > 5 ans
+        except Exception:
+            pass
+
     return {
         "company_name": name,
         "siren": siren,
@@ -590,6 +633,9 @@ def enrich_company_partial(sirene_company) -> dict:
         "city": city,
         "address": address,
         "size": size,
+        "date_creation": date_creation,
+        "company_age_months": company_age_months,
+        "lifecycle_stage": lifecycle_stage,
         "legal_dirigeants": dirs,
         "website": website,
         "company_email": company_email,
@@ -628,6 +674,13 @@ def enrich_company_partial(sirene_company) -> dict:
         "tech_signals": (web_dict or {}).get("tech_signals"),
         "tech_categories": (web_dict or {}).get("tech_categories"),
         "primary_cms": (web_dict or {}).get("primary_cms"),
+        # v0.15.0 — Careers page (job offers scraped directly from the site)
+        "careers_url": (careers_data or {}).get("careers_url"),
+        "careers_n_jobs": (careers_data or {}).get("n_jobs") or 0,
+        "careers_top_titles": (careers_data or {}).get("top_titles") or [],
+        "careers_tech_signals": (careers_data or {}).get("tech_signals") or {},
+        "careers_tilt_categories": (careers_data or {}).get("tilt_categories") or [],
+        "careers_icp_modifier": (careers_data or {}).get("icp_modifier") or 0,
     }
 
 
@@ -782,6 +835,11 @@ def preliminary_score(partial: dict) -> int:
       +10 tech_stack has has-crm (HubSpot/Salesforce/Pipedrive)
       +5  tech_stack has has-framework (Next.js/React/Vue)
       +2  per soft signal (payment, analytics, chat, compliance — cap +6)
+      +30 careers page open with AI/data/automation roles (cap +30)
+      +15 careers page open with tech roles
+      +15 lifecycle_stage = scaling (Sirene age 6-24 mois)
+      -5  lifecycle_stage = very-early (< 6 mois)
+      +40 ACTIVE matching RFP (BOAMP) — strongest possible signal
       [If GMB-relevant NAF only:]
       +20 has GMB cuisine_type
       +15 has GMB rating >= 4.0
@@ -834,6 +892,25 @@ def preliminary_score(partial: dict) -> int:
     # has-payment / has-analytics / has-chat / has-compliance => +2 each (cap 6)
     soft_signals = {"has-payment", "has-analytics", "has-chat", "has-compliance"}
     score += min(6, 2 * len(tech_signals & soft_signals))
+
+    # v0.15.0 — CAREERS PAGE signals (recrutement direct sur le site)
+    # Complète FT: capture les rôles cadres / tech que FT rate.
+    careers_mod = partial.get("careers_icp_modifier") or 0
+    score += min(30, int(careers_mod))   # +30 max si AI/data/automation ouverts
+
+    # v0.15.0 — LIFECYCLE STAGE (Sirene date_creation)
+    stage = partial.get("lifecycle_stage")
+    if stage == "scaling":
+        score += 15      # 6-24 mois = besoin de structurer = budget IA/CRM/auto
+    elif stage == "very-early":
+        score -= 5       # < 6 mois = trop tôt, pas budget
+    # mature/legacy = neutre
+
+    # v0.15.0 — APPEL D'OFFRES ACTIF (signal d'intention d'achat MAXIMUM)
+    # Une boîte avec un AO actif matchant notre offre = LITTÉRALEMENT en train
+    # de chercher à acheter. Boost massif, plafonné par le cap à 100.
+    if partial.get("rfp_active"):
+        score += 40
 
     # CHR/retail-only signals
     if gmb_relevant:
@@ -1454,6 +1531,16 @@ def finalize_lead(
         ft_reason=partial.get("ft_reason"),
         bodacc_verdict=partial.get("bodacc_verdict"),
         bodacc_reason=partial.get("bodacc_reason"),
+        # v0.15.0 extras
+        date_creation=partial.get("date_creation"),
+        company_age_months=partial.get("company_age_months"),
+        lifecycle_stage=partial.get("lifecycle_stage"),
+        careers_url=partial.get("careers_url"),
+        careers_n_jobs=partial.get("careers_n_jobs") or 0,
+        careers_top_titles=partial.get("careers_top_titles") or [],
+        careers_tech_signals=partial.get("careers_tech_signals") or {},
+        careers_tilt_categories=partial.get("careers_tilt_categories") or [],
+        rfp_active=partial.get("rfp_active"),
     )
     lead.evaluate()
     return lead

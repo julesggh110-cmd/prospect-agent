@@ -102,6 +102,13 @@ def run(
     paid_threshold: int = 40,
     max_candidates: int | None = None,
     raw_mode: bool = False,
+    # v0.15.0
+    multi_touch: bool = False,
+    rfp_keywords: list[str] | None = None,
+    rfp_cpv_preset: str | None = None,
+    rfp_regions: list[str] | None = None,
+    rfp_days: int = 90,
+    rfp_montant_min: int | None = None,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -165,7 +172,85 @@ def run(
     # all of them, regardless of quality.
     from pipeline import is_junk_company_name, preliminary_score
 
-    if raw_mode:
+    # v0.15.0 — RFP-FIRST MODE: source prospects from BOAMP appels d'offres
+    # matching our offer. Strongest possible intent signal.
+    # Note: this REPLACES the Sirene sourcing — the orgs come from RFPs.
+    if rfp_keywords or rfp_cpv_preset:
+        from appels_offres import search_boamp
+        print(f"[BOAMP] searching active RFPs · keywords={rfp_keywords} · "
+              f"cpv_preset={rfp_cpv_preset} · regions={rfp_regions} · "
+              f"days={rfp_days} · montant_min={rfp_montant_min}")
+        rfps = search_boamp(
+            keywords=rfp_keywords,
+            cpv_preset=rfp_cpv_preset,
+            regions=rfp_regions,
+            days=rfp_days,
+            only_active=True,
+            limit=100,
+            montant_min=rfp_montant_min,
+        )
+        print(f"[BOAMP] {len(rfps)} active RFPs matched")
+        if not rfps:
+            print("[BOAMP] No active RFPs. Widen keywords / region / days.")
+            sys.exit(1)
+
+        # Dedupe by SIREN (one org can publish several RFPs — keep the
+        # most recent/highest-value one as the canonical signal).
+        by_siren: dict[str, dict] = {}
+        for r in rfps:
+            s = r.get("siren")
+            if not s:
+                continue  # no SIREN = can't enrich via Sirene
+            existing = by_siren.get(s)
+            if not existing:
+                by_siren[s] = r
+            else:
+                # Keep the one with the highest amount (or most recent if none)
+                a = (r.get("montant_estime_eur") or 0)
+                b = (existing.get("montant_estime_eur") or 0)
+                if a > b:
+                    by_siren[s] = r
+        unique_sirens = list(by_siren.keys())
+        print(f"[BOAMP] {len(unique_sirens)} unique SIREN organisations to enrich")
+
+        # Dedup vs lead_store (only_new)
+        if only_new:
+            seen = already_seen_sirens(unique_sirens)
+            unique_sirens = [s for s in unique_sirens if s not in seen]
+            print(f"[Dedup] {len(seen)} already prospected, {len(unique_sirens)} new")
+        if not unique_sirens:
+            print("[BOAMP] all matching orgs already prospected. Use --include-seen "
+                  "or widen the BOAMP filters.")
+            sys.exit(1)
+
+        # Fetch Sirene companies for these SIRENs (one search per SIREN)
+        from sirene_client import SireneClient
+        companies = []
+        with SireneClient() as cli:
+            for s in unique_sirens[:max(volume * 3, 50)]:
+                try:
+                    resp = cli.search(s)
+                    if resp.results:
+                        companies.append(resp.results[0])
+                except Exception:
+                    continue
+        print(f"[Sirene] {len(companies)}/{len(unique_sirens)} companies hydrated from RFP SIRENs")
+
+        # Enrich in parallel
+        partials = enrich_companies_parallel(companies, max_workers=max_workers)
+        # Attach the RFP onto each partial (lookup by SIREN)
+        for p in partials:
+            s = p.get("siren")
+            if s and s in by_siren:
+                p["rfp_active"] = by_siren[s]
+                # Quality flag for visibility in the XLSX
+                rfp_id = by_siren[s].get("idweb") or "?"
+                p.setdefault("quality_flags", []).append(f"rfp-active:{rfp_id}")
+        with_site = sum(1 for p in partials if p.get('website'))
+        print(f"[BOAMP-Enrich] {with_site}/{len(partials)} with website · "
+              f"{sum(1 for p in partials if p.get('rfp_active'))} RFP-linked")
+
+    elif raw_mode:
         # Legacy: fetch volume candidates, no filtering
         with SireneClient() as c:
             resp = c.search_many(
@@ -490,6 +575,7 @@ def run(
             sender_company=sender_company,
             sender_pitch=sender_pitch,
             target_icp_description=target_icp_description,
+            multi_touch=multi_touch,
         )
         # Attach the generated email body to the lead model as extra fields so
         # the XLSX export picks them up.
@@ -500,7 +586,15 @@ def run(
                 setattr(l, "cold_email_subject", ce.subject)
                 setattr(l, "cold_email_body", ce.body)
                 setattr(l, "cold_email_angle", ce.angle)
-        print(f"[Cold-Email] {len(emails)}/{len(kept_for_email)} drafted")
+                # v0.15.0 — multi-touch sequence (J+4 + J+10)
+                if multi_touch:
+                    setattr(l, "cold_email_followup_subject", ce.followup_subject or "")
+                    setattr(l, "cold_email_followup_body", ce.followup_body or "")
+                    setattr(l, "cold_email_breakup_subject", ce.breakup_subject or "")
+                    setattr(l, "cold_email_breakup_body", ce.breakup_body or "")
+        n_seq = sum(1 for e in emails.values() if e.followup_body) if multi_touch else 0
+        print(f"[Cold-Email] {len(emails)}/{len(kept_for_email)} drafted"
+              + (f" · {n_seq} full 3-touch sequences" if multi_touch else ""))
 
     # 3e. Optional HubSpot push (only kept leads)
     if push_to_hubspot:
@@ -651,6 +745,28 @@ def _cli() -> None:
                    help="Multi-line detailed pitch describing your offer "
                         "(value prop, use cases, differentiators). Passed to "
                         "Claude for richer email personalization.")
+    # v0.15.0 — séquence multi-touch
+    p.add_argument("--multi-touch", action="store_true",
+                   help="Generate a 3-touch sequence (J0 cold + J+4 follow-up "
+                        "+ J+10 break-up) per lead. Requires --generate-emails. "
+                        "Multiplies response rate by 3-4×. ~$0.005/lead.")
+    # v0.15.0 — appels d'offres
+    p.add_argument("--rfp-keywords",
+                   help="Comma-separated FR keywords to search BOAMP (appels "
+                        "d'offres publics). Ex: 'formation IA,conseil digital'. "
+                        "When set, the campaign sources prospects FROM matching "
+                        "RFPs instead of Sirene — strongest possible intent signal.")
+    p.add_argument("--rfp-cpv-preset",
+                   choices=["formation_ia", "transformation_numerique",
+                            "boissons_alcoolisees", "marketing"],
+                   help="Shortcut to a curated CPV codes bundle for BOAMP search.")
+    p.add_argument("--rfp-regions",
+                   help="Comma-separated FR region names for BOAMP filter "
+                        "(ex: 'Occitanie,Nouvelle-Aquitaine'). Auto-expanded to depts.")
+    p.add_argument("--rfp-days", type=int, default=90,
+                   help="BOAMP lookback window in days (default 90).")
+    p.add_argument("--rfp-montant-min", type=int, default=None,
+                   help="Drop RFPs with estimated amount below this (€).")
     args = p.parse_args()
 
     # Quota helpers — let the operator inspect / set caps from the same CLI
@@ -711,6 +827,16 @@ def _cli() -> None:
             "comeos-formation": PRESET_COMEOS_FORMATION,
         }[args.icp_preset]
 
+    # Parse v0.15 RFP flags
+    rfp_keywords = (
+        [k.strip() for k in args.rfp_keywords.split(",") if k.strip()]
+        if args.rfp_keywords else None
+    )
+    rfp_regions = (
+        [r.strip() for r in args.rfp_regions.split(",") if r.strip()]
+        if args.rfp_regions else None
+    )
+
     run(
         query=args.query,
         naf=args.naf,
@@ -736,6 +862,12 @@ def _cli() -> None:
         paid_threshold=args.paid_threshold,
         max_candidates=args.max_candidates,
         raw_mode=args.raw_mode,
+        multi_touch=args.multi_touch,
+        rfp_keywords=rfp_keywords,
+        rfp_cpv_preset=args.rfp_cpv_preset,
+        rfp_regions=rfp_regions,
+        rfp_days=args.rfp_days,
+        rfp_montant_min=args.rfp_montant_min,
     )
 
 

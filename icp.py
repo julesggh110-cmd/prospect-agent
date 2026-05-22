@@ -130,6 +130,41 @@ def evaluate_rule(lead, rule: dict) -> bool:
         actual = order.get(getattr(lead, "ft_hiring_intensity", None) or "", -1)
         if actual < threshold:
             return False
+    # v0.15.0 — Careers page TILT categories
+    # Examples:
+    #   {"careers_tilt_any": ["ai", "data", "automation"]}
+    #   {"careers_tilt_all": ["data", "automation"]}
+    if "careers_tilt_any" in rule:
+        cats = set(getattr(lead, "careers_tilt_categories", []) or [])
+        if not (cats & set(rule["careers_tilt_any"])):
+            return False
+    if "careers_tilt_all" in rule:
+        cats = set(getattr(lead, "careers_tilt_categories", []) or [])
+        if not set(rule["careers_tilt_all"]).issubset(cats):
+            return False
+    if "careers_min_jobs" in rule:
+        n = getattr(lead, "careers_n_jobs", 0) or 0
+        if int(n) < int(rule["careers_min_jobs"]):
+            return False
+    # v0.15.0 — Lifecycle stage (Sirene age)
+    # Example: {"lifecycle_stage_in": ["scaling", "mature"]}
+    if "lifecycle_stage_in" in rule:
+        stage = getattr(lead, "lifecycle_stage", None)
+        if stage not in rule["lifecycle_stage_in"]:
+            return False
+    if "company_age_max_months" in rule:
+        m = getattr(lead, "company_age_months", None)
+        if m is None or int(m) > int(rule["company_age_max_months"]):
+            return False
+    if "company_age_min_months" in rule:
+        m = getattr(lead, "company_age_months", None)
+        if m is None or int(m) < int(rule["company_age_min_months"]):
+            return False
+    # v0.15.0 — RFP active (appel d'offres matching)
+    # Boolean rule: lead has an active matching RFP
+    if "has_active_rfp" in rule and rule["has_active_rfp"]:
+        if not getattr(lead, "rfp_active", None):
+            return False
     return True
 
 
