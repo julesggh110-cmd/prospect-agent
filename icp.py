@@ -71,6 +71,15 @@ def evaluate_rule(lead, rule: dict) -> bool:
     if "naf_in" in rule:
         if (lead.company_naf or "") not in rule["naf_in"]:
             return False
+    # v0.15.1 — exclusion rules (used to drop entire sectors with their own
+    # OPCO/budget formation interne — e.g. banks/insurances/mutuelles)
+    if "naf_not_starts_with" in rule:
+        naf = lead.company_naf or ""
+        if any(naf.startswith(p) for p in rule["naf_not_starts_with"]):
+            return False
+    if "naf_not_in" in rule:
+        if (lead.company_naf or "") in rule["naf_not_in"]:
+            return False
     if "city_in" in rule:
         city = (lead.company_city or "").lower()
         if city not in {c.lower() for c in rule["city_in"]}:
@@ -169,14 +178,26 @@ def evaluate_rule(lead, rule: dict) -> bool:
 
 
 def score_lead(lead, icp: dict) -> int:
-    """Return ICP fit score 0-100 (rounded to nearest int)."""
+    """Return ICP fit score 0-100 (rounded to nearest int).
+
+    v0.15.1 — Exclusion rules (those containing `naf_not_starts_with` or
+    `naf_not_in`) are treated as HARD FILTERS: if they fail, the lead's
+    final score is 0 regardless of other rules.
+    """
     rules = icp.get("rules", [])
     if not rules:
         return 0
-    total_weight = sum(r.get("weight", 0) for r in rules)
+    # Hard-filter exclusions — if any "exclude" rule fails, kill the score
+    for r in rules:
+        if any(k in r for k in ("naf_not_starts_with", "naf_not_in")):
+            if not evaluate_rule(lead, r):
+                return 0
+    # Standard weighted scoring on the rest (skip 0-weight rules)
+    scoring_rules = [r for r in rules if r.get("weight", 0) > 0]
+    total_weight = sum(r.get("weight", 0) for r in scoring_rules)
     if total_weight == 0:
         return 0
-    earned = sum(r.get("weight", 0) for r in rules if evaluate_rule(lead, r))
+    earned = sum(r.get("weight", 0) for r in scoring_rules if evaluate_rule(lead, r))
     return int(round(100 * earned / total_weight))
 
 
@@ -342,16 +363,106 @@ PRESET_COMEOS_FORMATION = {
 }
 
 
+# v0.15.1 — preset dédié aux grandes structures privées (ETI 200-1999 sal)
+# Tiré de l'audit campagne "comeos-200plus-sud-1" (mai 2026) :
+#   - 8/10 leads = banques (NAF 64.19Z) → ont leur OPCO BPCE/CA interne,
+#     pas de budget formation externe. EXCLUSION DURE.
+#   - 10/10 leads = lifecycle "legacy" (>5 ans) → à cette taille, c'est
+#     systématique. Le signal lifecycle est mort, on ne l'utilise PAS.
+#   - 10/10 ft_hiring_intensity "high" (saturé HQ-agg). v0.15.1 met "saturated"
+#     pour ces cas → on n'utilise QUE high/medium réels (donc seules les
+#     vraies hyper-croissances ressortent).
+#   - Tech maturity 0/10 > 25 → on baisse à 20 pour avoir un signal qui fire.
+#
+# Public cible Comeos formation IA :
+#   - ETI mid-market 100-1999 salariés (tranche 22, 31, 32, 41, 42)
+#   - Secteurs où la formation IA générique CONVERTIT : aéro, ESN, conseil,
+#     ingénierie, expertise comptable, pharma, cosmétique, agro premium.
+#   - Exclus : banque/assurance/mutuelle (OPCO interne), public, syndicats.
+PRESET_COMEOS_ETI_FORMATION = {
+    "name": "Comeos — Formation IA / ETI privées 100-1999 sal",
+    "rules": [
+        # === EXCLUSIONS DURES (hard filter — désactive le lead s'il match) ===
+        {"name": "EXCLURE banque / assurance / mutuelle (OPCO interne)",
+         "weight": 0,
+         "naf_not_starts_with": [
+             "64.",   # activités des services financiers (banques)
+             "65.",   # assurances
+             "66.",   # activités auxiliaires de services financiers et d'assurance
+         ]},
+        # === TAILLE — ETI mid-market (poids fort) ===
+        {"name": "ETI 100-1999 salariés (vrais décideurs accessibles)",
+         "weight": 25,
+         "size_in": ["22", "31", "32", "41", "42"]},  # 100→1999 sal
+        # === SECTEURS À FORT FIT (poids fort) ===
+        {"name": "Tech tier 1 — aéro / ESN / conseil / ingénierie",
+         "weight": 25,
+         "naf_starts_with": [
+             "30.30",  # aéronautique / spatial
+             "62.",    # programmation / conseil informatique / SSII
+             "70.22",  # conseil pour les affaires
+             "71.12",  # ingénierie études techniques
+             "73.",    # publicité / études de marché
+             "72.",    # recherche-développement
+         ]},
+        {"name": "Tech tier 2 — pharma / cosmétique / agro premium / énergie",
+         "weight": 15,
+         "naf_starts_with": [
+             "21.",    # pharma
+             "20.42",  # cosmétiques
+             "10.71",  # boulangerie indus
+             "11.01",  # spiritueux
+             "35.",    # énergie
+             "69.20",  # expertise comptable / audit
+             "69.10",  # avocats
+         ]},
+        # === CONTACTABILITÉ ===
+        {"name": "A un site web actif",
+         "weight": 10,
+         "has_field": "company_website"},
+        {"name": "Téléphone décideur identifié",
+         "weight": 8,
+         "has_field_confidence_above": {"person_phone": 50}},
+        {"name": "Email décideur fiable",
+         "weight": 7,
+         "has_field_confidence_above": {"person_email": 60}},
+        # === SIGNAUX v0.14/v0.15 ===
+        # Stack moderne (CRM, automation, framework) — équipe déjà outillée
+        {"name": "Stack tech mature (>= 20)",
+         "weight": 10,
+         "tech_maturity_above": 20},
+        # Career page avec rôles IA/data/automation = TILT MAX
+        {"name": "Recrute des rôles tech (AI/data/automation)",
+         "weight": 15,
+         "careers_tilt_any": ["ai", "data", "automation"]},
+        # Recrutement réel via FT (NON saturé — v0.15.1)
+        {"name": "FT hiring medium ou high (non-saturé)",
+         "weight": 10,
+         "hiring_intensity_min": "medium"},
+        # BOAMP : si AO formation IA actif = signal d'intention max
+        {"name": "AO formation IA actif (BOAMP)",
+         "weight": 15,
+         "has_active_rfp": True},
+        # BODACC : augmentation capital récente = budget dispo
+        # (note: pas de rule directe, surfacé via preliminary_score)
+    ],
+}
+
+
 def _cli() -> None:
     import argparse
     import json
     p = argparse.ArgumentParser(description="Print a preset ICP profile or score one lead.")
-    p.add_argument("preset", choices=["cavistes-paris", "palaces-paris", "comeos-formation"])
+    p.add_argument("preset", choices=[
+        "cavistes-paris", "palaces-paris",
+        "comeos-formation", "comeos-eti-formation",
+    ])
     args = p.parse_args()
     presets = {
         "cavistes-paris": PRESET_CAVISTES_PREMIUM_PARIS,
         "palaces-paris": PRESET_PALACES_PARIS,
         "comeos-formation": PRESET_COMEOS_FORMATION,
+        "comeos-eti-formation": PRESET_COMEOS_ETI_FORMATION,
     }
     print(json.dumps(presets[args.preset], indent=2, ensure_ascii=False))
 

@@ -275,10 +275,15 @@ def enrich_company_partial(sirene_company) -> dict:
                     return None
             ft_signal = _ft() or {}
             intensity = ft_signal.get("hiring_intensity")
-            if intensity == "high":
-                quality_flags.append(f"hiring-high:{ft_signal.get('n_offres')}")
+            n_total = ft_signal.get("n_offres_total") or ft_signal.get("n_offres") or 0
+            if intensity == "saturated":
+                # v0.15.1 — HQ-aggregation: flag pour la traçabilité, pas
+                # un signal de qualité.
+                quality_flags.append(f"hiring-saturated:{n_total}")
+            elif intensity == "high":
+                quality_flags.append(f"hiring-high:{n_total}")
             elif intensity == "medium":
-                quality_flags.append(f"hiring-medium:{ft_signal.get('n_offres')}")
+                quality_flags.append(f"hiring-medium:{n_total}")
             elif intensity == "none":
                 quality_flags.append("hiring-none")
 
@@ -667,6 +672,8 @@ def enrich_company_partial(sirene_company) -> dict:
         # France Travail hiring signal (when API key set)
         "ft_hiring_intensity": ft_signal.get("hiring_intensity"),
         "ft_n_offres": ft_signal.get("n_offres"),
+        "ft_n_offres_total": ft_signal.get("n_offres_total"),    # v0.15.1
+        "ft_is_saturated": ft_signal.get("is_saturated", False), # v0.15.1
         "ft_top_titles": ft_signal.get("top_titles"),
         "ft_reason": ft_signal.get("reason"),
         # Tech stack (always-on, from web_dict — Wappalyzer-LITE)
@@ -871,8 +878,11 @@ def preliminary_score(partial: dict) -> int:
 
     # FRANCE TRAVAIL hiring signal — boîte qui recrute = budget formation IA
     # disponible. Strongest free signal we have for AI/training upsells.
+    # v0.15.1: "saturated" = aggregated HQ pool (banque, mutuelle…), 0 boost.
     ft_intensity = partial.get("ft_hiring_intensity")
-    if ft_intensity == "high":
+    if ft_intensity == "saturated":
+        score += 0       # signal compromis → ne pas booster ni pénaliser
+    elif ft_intensity == "high":
         score += 20      # 10+ offres → hyper-croissance
     elif ft_intensity == "medium":
         score += 10      # 4-9 offres → croissance soutenue

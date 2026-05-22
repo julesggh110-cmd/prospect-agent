@@ -286,6 +286,54 @@ def _domain_from_llm(company: str, *, role: Optional[str] = None) -> Optional[st
         return None
 
 
+def _domain_matches_company(domain: str, company: str) -> bool:
+    """v0.15.1 — sanity check: at least one significant token of the company
+    name appears in the domain (or vice-versa).
+
+    Prevents cross-contamination bugs we saw in real campaigns:
+      • Crédit Agricole CTRE FRANCE → website returned 'agences.caisse-epargne.fr'
+        (a competitor's domain found in search results) → wrong email domain.
+
+    Allows legitimate edge cases:
+      • Parent company / subsidiary mismatches handled by known-FR-groups table.
+      • Trade-name vs legal-name handled because we accept ANY significant token.
+
+    A token is "significant" if it's >=4 chars and not a generic FR business
+    word (sas, sarl, france, groupe, etc.).
+    """
+    if not domain or not company:
+        return False
+    # Normalise both
+    d = _strip_accents(domain.lower())
+    c = _strip_accents(company.lower())
+    # Generic noise words to ignore
+    _STOP = {
+        "sas", "sasu", "sarl", "eurl", "snc", "scop", "scic", "sa", "selas",
+        "selarl", "scp", "groupe", "group", "france", "french", "fr", "ets",
+        "etablissement", "etablissements", "compagnie", "cie", "ste", "societe",
+        "company", "co", "inc", "ltd", "corp", "international", "intl",
+        "national", "nationale", "regional", "regionale", "centre", "central",
+        "and", "et", "de", "des", "du", "la", "le", "les", "l", "d",
+    }
+    # Extract significant tokens from company name
+    raw_tokens = re.split(r"[^a-z0-9]+", c)
+    tokens = [t for t in raw_tokens if len(t) >= 4 and t not in _STOP]
+    if not tokens:
+        # Fallback to any non-stop token (3+ chars) — happens with very short brands
+        tokens = [t for t in raw_tokens if len(t) >= 3 and t not in _STOP]
+    if not tokens:
+        return True  # can't decide — don't block
+    # Strip subdomain prefixes ('agences.caisse-epargne.fr' → 'caisse-epargne.fr')
+    # Compare against the full domain string (incl. subdomains) to be lenient.
+    domain_compact = re.sub(r"[^a-z0-9]+", "", d)
+    # Match if ANY company token appears as a substring of the domain
+    for t in tokens:
+        t_compact = re.sub(r"[^a-z0-9]+", "", t)
+        if t_compact and t_compact in domain_compact:
+            return True
+    return False
+
+
 def resolve_domain(
     company: str,
     *,
@@ -297,6 +345,10 @@ def resolve_domain(
 
     Returns (domain, source) where source is one of:
         "website" | "known-fr-group" | "llm-inferred" | "none"
+
+    v0.15.1 — Tier 1 now does a SANITY CHECK against the company name before
+    accepting the website's domain. If the website doesn't share any
+    significant token with the company name, we skip it and try tier 2/3.
     """
     # Tier 1: verified website (the caller already passed strict FR checks)
     if website:
@@ -304,7 +356,13 @@ def resolve_domain(
         host = (urlparse(website).hostname or "").lower()
         host = host.removeprefix("www.")
         if host and "." in host:
-            return host, "website"
+            # v0.15.1 — only accept if domain shares a significant token with
+            # the company name. Otherwise the website was likely mis-attributed
+            # by website_finder (we saw this on big-name banks).
+            if _domain_matches_company(host, company):
+                return host, "website"
+            # else: drop through to tier 2/3 — known FR group / LLM
+            # The cross-contamination case ends up here.
 
     # Tier 2: hardcoded FR groups (zero hallucination risk)
     known = _domain_from_known_group(company)

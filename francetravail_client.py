@@ -89,14 +89,20 @@ def _get_token() -> Optional[str]:
         return None
 
 
-def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[list[dict]]:
-    """Return active job offers for a given SIRET. Empty list = no offers.
+def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[dict]:
+    """Return active job offers for a given SIRET + the REAL total count.
 
     The API filters by ESTABLISHMENT (SIRET), not just company (SIREN), so
     we can target the local outlet of a chain. Pass the SIRET from
     Sirene's matching_etablissement.
 
-    None = API error (no key, throttled, etc.). [] = no offers in window.
+    Returns:
+        {"resultats": [...], "total_real": int}  on success
+        None on API error / no key
+
+    `total_real` comes from the Content-Range header and reflects the actual
+    matching count (not the capped page size). Used to detect "saturated"
+    HQ-aggregation cases (v0.15.1 fix).
     """
     if not siret or len(siret) != 14 or not siret.isdigit():
         return None
@@ -119,12 +125,15 @@ def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[list[
                     "entreprise.siret": siret,
                     "minCreationDate": min_date,
                     "maxCreationDate": max_date,
-                    "range": "0-49",
+                    # We ask for a higher range to discriminate truly large vs
+                    # 50-saturated. The Content-Range header gives the real
+                    # total regardless of what we return here.
+                    "range": "0-149",
                 },
                 headers={"Authorization": f"Bearer {token}"},
             )
             if r.status_code == 204:   # no offers
-                return []
+                return {"resultats": [], "total_real": 0}
             # France Travail returns 206 Partial Content for paginated lists
             # (Content-Range header), even when ALL results fit. So accept
             # both 200 and 206 as success. Anything else is a real error.
@@ -135,7 +144,16 @@ def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[list[
                 mark_used("francetravail")
             except Exception:
                 pass
-            return r.json().get("resultats") or []
+            resultats = r.json().get("resultats") or []
+            # Parse Content-Range header: "offres 0-49/152" → total = 152
+            total_real = len(resultats)
+            cr = r.headers.get("Content-Range") or r.headers.get("content-range")
+            if cr and "/" in cr:
+                try:
+                    total_real = int(cr.split("/")[-1])
+                except Exception:
+                    pass
+            return {"resultats": resultats, "total_real": total_real}
     except Exception:
         return None
 
@@ -143,11 +161,20 @@ def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[list[
 def hiring_signal_for_siret(siret: str, *, since_days: int = 30) -> dict:
     """Classify hiring activity for a SIRET into a single signal dict.
 
+    v0.15.1 — detects "HQ aggregation": when the API returns a very large
+    n_offres (>= 100) for a single SIRET, it usually means the API is
+    aggregating all the group's subsidiaries' jobs (we saw this on banks
+    where every Caisse d'Épargne SIREN returned 50+ Optic-2000 / boucherie
+    offers from unrelated subsidiaries). In that case we DOWNGRADE the
+    icp_modifier to avoid false "hyper-croissance" boosts on legacy ETIs.
+
     Returns:
         {
             "siret": str,
-            "n_offres": int,
+            "n_offres": int,                     # number returned in this page
+            "n_offres_total": int,                # real total from Content-Range
             "hiring_intensity": "high" | "medium" | "low" | "none" | "unknown",
+            "is_saturated": bool,                # likely HQ-aggregation artifact
             "top_rome_codes": [str, ...],         # e.g. ["M1502"]
             "top_titles": [str, ...],             # short job titles
             "icp_modifier": int,                  # +20 high, +10 medium, 0 low, -5 none
@@ -158,7 +185,9 @@ def hiring_signal_for_siret(siret: str, *, since_days: int = 30) -> dict:
     out = {
         "siret": siret,
         "n_offres": 0,
+        "n_offres_total": 0,
         "hiring_intensity": "unknown",
+        "is_saturated": False,
         "top_rome_codes": [],
         "top_titles": [],
         "icp_modifier": 0,
@@ -167,11 +196,14 @@ def hiring_signal_for_siret(siret: str, *, since_days: int = 30) -> dict:
     }
     if not siret:
         return out
-    offres = fetch_offres_by_siret(siret, since_days=since_days)
-    if offres is None:
+    raw = fetch_offres_by_siret(siret, since_days=since_days)
+    if raw is None:
         return out
-    n = len(offres)
-    out["n_offres"] = n
+    offres = raw.get("resultats") or []
+    n_real = raw.get("total_real") or len(offres)
+    n_page = len(offres)
+    out["n_offres"] = n_page
+    out["n_offres_total"] = n_real
     # Aggregate the top ROME categories + job titles
     from collections import Counter
     romes = Counter()
@@ -185,22 +217,44 @@ def hiring_signal_for_siret(siret: str, *, since_days: int = 30) -> dict:
             titles.append(intitule)
     out["top_rome_codes"] = [rc for rc, _ in romes.most_common(3)]
     out["top_titles"] = titles
-    # Intensity buckets
-    if n >= 10:
+
+    # v0.15.1 — HQ saturation detection
+    # Heuristic: more than 100 jobs on a single SIRET in 30 days is
+    # vanishingly rare for a real local establishment. It's almost always
+    # the API treating the SIREN HQ as the aggregator for ALL the group's
+    # subsidiaries. In that case the "intensity" signal is noise, not gold.
+    is_saturated = n_real >= 100
+    # Also detect: heterogeneous top_titles (banque + boucherie + maçon) —
+    # if 3+ distinct ROME categories AND >30 offers, almost certainly mixed
+    # subsidiary pool.
+    if n_real >= 30 and len(out["top_rome_codes"]) >= 3:
+        is_saturated = True
+    out["is_saturated"] = is_saturated
+
+    # Intensity buckets — use REAL total (Content-Range), not the page size.
+    if is_saturated:
+        # We DON'T trust the count → label "unknown-aggregated" + 0 modifier
+        out["hiring_intensity"] = "saturated"
+        out["icp_modifier"] = 0
+        out["reason"] = (
+            f"{n_real} offres remontées — probablement agrégation HQ "
+            f"(toutes filiales du groupe). Signal non discriminant pour ce SIRET."
+        )
+    elif n_real >= 10:
         out["hiring_intensity"] = "high"
         out["icp_modifier"] = 20
         out["reason"] = (
-            f"{n} offres en {since_days}j — hyper-croissance (équipe en "
+            f"{n_real} offres en {since_days}j — hyper-croissance (équipe en "
             f"expansion forte)"
         )
-    elif n >= 4:
+    elif n_real >= 4:
         out["hiring_intensity"] = "medium"
         out["icp_modifier"] = 10
-        out["reason"] = f"{n} offres en {since_days}j — croissance soutenue"
-    elif n >= 1:
+        out["reason"] = f"{n_real} offres en {since_days}j — croissance soutenue"
+    elif n_real >= 1:
         out["hiring_intensity"] = "low"
         out["icp_modifier"] = 5
-        out["reason"] = f"{n} offre(s) — recrutement modéré"
+        out["reason"] = f"{n_real} offre(s) — recrutement modéré"
     else:
         out["hiring_intensity"] = "none"
         out["icp_modifier"] = -5

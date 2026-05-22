@@ -680,12 +680,15 @@ def _cli() -> None:
                    help="Parallel enrichment workers (default 8)")
     p.add_argument("--icp-preset",
                    choices=["cavistes-paris", "palaces-paris", "bear-brothers-chr",
-                            "comeos-formation"],
+                            "comeos-formation", "comeos-eti-formation"],
                    help="Apply a preset ICP profile and add icp_score column. "
                         "bear-brothers-chr uses GMB cuisine_type to filter "
                         "vegan/halal/cantine and boost gastro/bar/brasserie. "
                         "comeos-formation targets santé/médico-social/industrie/BTP "
-                        "50-249 emp en Occitanie (Comeos QSE/RH training).")
+                        "50-249 emp en Occitanie (Comeos QSE/RH training). "
+                        "comeos-eti-formation targets ETI 100-1999 sal en aéro/ESN/"
+                        "conseil/ingénierie/pharma (Comeos formation IA), EXCLUT "
+                        "banques/assurances (OPCO interne).")
     # Memory / dedup — ON BY DEFAULT in v0.12.3. Use --include-seen to override.
     p.add_argument("--only-new", action="store_true", default=True,
                    help="DEFAULT ON: skip SIRENs already in lead_store. "
@@ -817,6 +820,7 @@ def _cli() -> None:
         from icp import (
             PRESET_BEAR_BROTHERS_CHR,
             PRESET_CAVISTES_PREMIUM_PARIS,
+            PRESET_COMEOS_ETI_FORMATION,
             PRESET_COMEOS_FORMATION,
             PRESET_PALACES_PARIS,
         )
@@ -825,6 +829,7 @@ def _cli() -> None:
             "palaces-paris": PRESET_PALACES_PARIS,
             "bear-brothers-chr": PRESET_BEAR_BROTHERS_CHR,
             "comeos-formation": PRESET_COMEOS_FORMATION,
+            "comeos-eti-formation": PRESET_COMEOS_ETI_FORMATION,
         }[args.icp_preset]
 
     # Parse v0.15 RFP flags
