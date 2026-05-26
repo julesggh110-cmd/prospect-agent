@@ -120,14 +120,38 @@ _KNOWN_AUDIT_FIRMS = {
 
 
 def _name_looks_like_audit_firm(name: str) -> bool:
-    """True if the cleaned name matches a known FR audit / CAC firm."""
+    """True if the cleaned name matches a known FR audit / CAC firm OR a
+    generic pattern ('Cabinet X', 'X Audit', 'X Conseil', 'X & Associés', ...).
+
+    v0.16.2 — Cas réel BBW-31: LIVINPARIS avait person_name='Cabinet Audit'
+    qui ne matchait aucune entrée hard-codée. On élargit aux patterns
+    génériques très typiques des CAC indépendants français.
+    """
     if not name:
         return False
     import re, unicodedata
     n = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
     n = re.sub(r"\b(s\.?a\.?|sas|sasu|sarl|eurl|sca|llp|inc|gmbh|ltd)\b\.?", "", n)
     n = re.sub(r"\s+", " ", n).strip()
-    return any(firm in n for firm in _KNOWN_AUDIT_FIRMS)
+    # Hard-coded firm names (gros cabinets)
+    if any(firm in n for firm in _KNOWN_AUDIT_FIRMS):
+        return True
+    # Generic CAC / audit / conseil firm patterns
+    _GENERIC_AUDIT_PATTERNS = [
+        r"^cabinet\b",            # "Cabinet Audit", "Cabinet Martin"
+        r"\baudit\b",              # "X Audit", "Audit Y"
+        r"\bconseil(s)?\b",        # "X Conseil", "Cabinet Conseil"
+        r"\bcommissariat\b",       # "X Commissariat aux comptes"
+        r"(?:\bet\s+|&\s*)associes?\b", # "Martin & Associés", "Dupont et Associés"
+        r"\bexpertise\b",          # "X Expertise Comptable"
+        r"\bexperts?\s+comptables?\b",
+        r"\bcomptables?\s+associes?\b",
+        r"\bfiduciaire\b",         # "Compagnie Fiduciaire"
+    ]
+    for pat in _GENERIC_AUDIT_PATTERNS:
+        if re.search(pat, n):
+            return True
+    return False
 
 
 def _sort_dirigeants_by_decisionmaker_priority(dirs: list[dict]) -> list[dict]:
