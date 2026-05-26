@@ -282,9 +282,12 @@ def enrich_company_partial(sirene_company) -> dict:
         elif hasattr(siege, "siret"):
             siret = getattr(siege, "siret", None)
         if siret:
-            # v0.15.2 — passe le NAF pour le detector de saturation par secteur
+            # v0.16.1 — bump cache namespace ("francetravail-v16:") parce que
+            # le cache disque servait encore 96 entrées pre-v0.16.0 avec
+            # intensity="saturated" (TTL 30j). Le décorateur @_cached retournait
+            # ces hits stales sans appeler la nouvelle fonction patchée.
             naf_for_ft = naf
-            @_cached("francetravail", f"{siret}|{naf_for_ft or ''}")
+            @_cached("francetravail-v16", f"{siret}|{naf_for_ft or ''}")
             def _ft():
                 try:
                     return hiring_signal_for_siret(siret, naf=naf_for_ft)
@@ -665,10 +668,19 @@ def enrich_company_partial(sirene_company) -> dict:
         # Google My Business — cuisine type, rating, photos. Used downstream
         # for ICP scoring (a "Végétarienne" is dropped from a spirits-brand
         # campaign, a "Bar à cocktails" is boosted).
+        # v0.16.1 — FALLBACK CHAIN: lit cuisine_type depuis HERE.category quand
+        # Serper Places (Google) ne retourne rien (quota épuisé ou pas de match).
+        # Avant ce fix: 0/298 leads avec cuisine_type sur CHR Paris (BBW-30).
         "gmb": gmb_data,
-        "cuisine_type": gmb_data.get("type") or gmb_data.get("category"),
-        "gmb_rating": gmb_data.get("rating"),
-        "gmb_rating_count": gmb_data.get("rating_count"),
+        "cuisine_type": (
+            gmb_data.get("type") or gmb_data.get("category")
+            or here_data.get("category")
+        ),
+        # Note: HERE Maps n'a PAS de rating/rating_count natifs → si Google
+        # Places est down, ces 2 champs restent null (--min-gmb-rating
+        # ne pourra pas fire dans ce cas).
+        "gmb_rating": gmb_data.get("rating") or here_data.get("rating"),
+        "gmb_rating_count": gmb_data.get("rating_count") or here_data.get("rating_count"),
         "is_operating": gmb_data.get("is_operating"),
         "permanently_closed": gmb_data.get("permanently_closed"),
         # Quality flags surfaced during partial enrichment

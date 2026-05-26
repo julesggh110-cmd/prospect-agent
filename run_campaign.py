@@ -218,6 +218,10 @@ def run(
     rfp_regions: list[str] | None = None,
     rfp_days: int = 90,
     rfp_montant_min: int | None = None,
+    # v0.16.0 — strict premium gates (BBW-30 hotfix: wire from CLI)
+    require_gmb: bool = False,
+    min_gmb_rating: float | None = None,
+    min_gmb_reviews: int | None = None,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -415,24 +419,66 @@ def run(
             if any(f.startswith("foreign-subsidiary:") for f in flags):
                 return False, "foreign-subsidiary"
             # v0.16.0 — strict premium gates (CHR mode)
-            if args.require_gmb:
+            if require_gmb:
                 gmb = p.get("gmb") or {}
                 if not (gmb.get("rating") or p.get("cuisine_type")):
                     return False, "no GMB enrichment (--require-gmb)"
-            if args.min_gmb_rating is not None:
+            if min_gmb_rating is not None:
                 r = p.get("gmb_rating")
-                if r is None or float(r) < float(args.min_gmb_rating):
-                    return False, f"GMB rating {r} < {args.min_gmb_rating}"
-            if args.min_gmb_reviews is not None:
+                if r is None or float(r) < float(min_gmb_rating):
+                    return False, f"GMB rating {r} < {min_gmb_rating}"
+            if min_gmb_reviews is not None:
                 rc = p.get("gmb_rating_count")
-                if rc is None or int(rc) < int(args.min_gmb_reviews):
-                    return False, f"GMB reviews {rc} < {args.min_gmb_reviews}"
+                if rc is None or int(rc) < int(min_gmb_reviews):
+                    return False, f"GMB reviews {rc} < {min_gmb_reviews}"
             return True, "ok"
 
         partials: list = []
         n_seen = 0
         n_junk_pre = 0
         n_failed_gate = 0
+        # BBW-30 diag: track enrichment + reason breakdown on scanned leads
+        _diag_stats = {
+            "scanned": 0,
+            "with_cuisine_type": 0,
+            "with_gmb_rating": 0,
+            "with_gmb_rating_count_50plus": 0,
+            "with_gmb_rating_4plus": 0,
+            "ft_intensities": {},
+            "kpmg_in_dirigeants": 0,
+            "reasons": {},
+        }
+        def _track(bp: dict, reason: str) -> None:
+            _diag_stats["scanned"] += 1
+            if bp.get("cuisine_type"):
+                _diag_stats["with_cuisine_type"] += 1
+            r = bp.get("gmb_rating")
+            if r is not None:
+                _diag_stats["with_gmb_rating"] += 1
+                try:
+                    if float(r) >= 4.0:
+                        _diag_stats["with_gmb_rating_4plus"] += 1
+                except Exception:
+                    pass
+            rc = bp.get("gmb_rating_count")
+            try:
+                if rc is not None and int(rc) >= 50:
+                    _diag_stats["with_gmb_rating_count_50plus"] += 1
+            except Exception:
+                pass
+            ft = bp.get("ft_hiring_intensity")
+            if ft is not None:
+                _diag_stats["ft_intensities"][ft] = (
+                    _diag_stats["ft_intensities"].get(ft, 0) + 1
+                )
+            dirs = bp.get("legal_dirigeants") or []
+            for d in dirs:
+                nm = (d.get("name") or d.get("raw_name") or "").lower()
+                if "kpmg" in nm or "mazars" in nm or "deloitte" in nm:
+                    _diag_stats["kpmg_in_dirigeants"] += 1
+                    break
+            key = reason.split(":")[0].split("<")[0].strip()[:60]
+            _diag_stats["reasons"][key] = _diag_stats["reasons"].get(key, 0) + 1
         with SireneClient() as c:
             for page_resp in c.iter_pages(
                 query=query, naf=naf,
@@ -473,6 +519,7 @@ def run(
                 # Apply post-enrichment quality gate
                 for bp in batch_partials:
                     ok, reason = _is_qualified(bp)
+                    _track(bp or {}, reason if not ok else "ok")
                     if not ok:
                         n_failed_gate += 1
                         continue
@@ -487,6 +534,9 @@ def run(
                     break
                 if n_seen >= cap:
                     break
+        # BBW-30 diag dump (always, even if no partials)
+        import json as _json
+        print(f"[BBW-30 DIAG] {_json.dumps(_diag_stats, ensure_ascii=False)}")
         if not partials:
             print("[Perfect] No qualified candidates found. Try widening filters.")
             sys.exit(1)
@@ -1037,6 +1087,9 @@ def _cli() -> None:
         rfp_regions=rfp_regions,
         rfp_days=args.rfp_days,
         rfp_montant_min=args.rfp_montant_min,
+        require_gmb=args.require_gmb,
+        min_gmb_rating=args.min_gmb_rating,
+        min_gmb_reviews=args.min_gmb_reviews,
     )
 
 
