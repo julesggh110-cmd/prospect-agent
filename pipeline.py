@@ -126,6 +126,7 @@ def enrich_company_partial(sirene_company) -> dict:
         date_creation = getattr(c, "date_creation", None)
         # Pydantic model: original siege might be in extra dict
         original_siege = (c.model_dump().get("_original_siege") or {}) if hasattr(c, 'model_dump') else {}
+        siege = getattr(c, "siege", None) or {}
         dirs = []
         for d in c.dirigeants:
             if not d.full_name:
@@ -290,18 +291,8 @@ def enrich_company_partial(sirene_company) -> dict:
                 except Exception:
                     return None
             ft_signal = _ft() or {}
-            intensity = ft_signal.get("hiring_intensity")
-            n_total = ft_signal.get("n_offres_total") or ft_signal.get("n_offres") or 0
-            if intensity == "saturated":
-                # v0.15.1 — HQ-aggregation: flag pour la traçabilité, pas
-                # un signal de qualité.
-                quality_flags.append(f"hiring-saturated:{n_total}")
-            elif intensity == "high":
-                quality_flags.append(f"hiring-high:{n_total}")
-            elif intensity == "medium":
-                quality_flags.append(f"hiring-medium:{n_total}")
-            elif intensity == "none":
-                quality_flags.append("hiring-none")
+            # v0.16.0 — FT désactivé (filtre SIRET non supporté par l'API).
+            # On garde l'appel pour traçabilité mais on ne flag plus rien.
 
     # SUBSIDIARY DETECTION: if Sirene's ORIGINAL siege (HQ before local_only
     # rewrote it) is in a different department than the matched establishment,
@@ -328,20 +319,22 @@ def enrich_company_partial(sirene_company) -> dict:
         except Exception:
             return None
 
-    @_cached("gmb", f"{name}|{city or ''}")
+    @_cached("gmb", f"{name}|{city or ''}|{naf or ''}")
     def _gmb_lookup():
         try:
-            p = find_business_place(name, city)
+            # v0.16.0 — pass NAF for sector-aware query retries (CHR/retail)
+            p = find_business_place(name, city, naf=naf)
             return normalize_place(p) if p else None
         except Exception:
             return None
 
-    @_cached("here", f"{name}|{city or ''}")
+    @_cached("here", f"{name}|{city or ''}|{naf or ''}")
     def _here_lookup():
         if not have_here_key():
             return None
         try:
-            return find_business_here(name, city)
+            # v0.16.0 — same NAF-aware retry for HERE Maps
+            return find_business_here(name, city, naf=naf)
         except Exception:
             return None
 
@@ -892,20 +885,10 @@ def preliminary_score(partial: dict) -> int:
     if bodacc_verdict == "QUALITY_BOOST":
         score += 10
 
-    # FRANCE TRAVAIL hiring signal — boîte qui recrute = budget formation IA
-    # disponible. Strongest free signal we have for AI/training upsells.
-    # v0.15.1: "saturated" = aggregated HQ pool (banque, mutuelle…), 0 boost.
-    ft_intensity = partial.get("ft_hiring_intensity")
-    if ft_intensity == "saturated":
-        score += 0       # signal compromis → ne pas booster ni pénaliser
-    elif ft_intensity == "high":
-        score += 20      # 10+ offres → hyper-croissance
-    elif ft_intensity == "medium":
-        score += 10      # 4-9 offres → croissance soutenue
-    elif ft_intensity == "low":
-        score += 5       # 1-3 offres → recrutement modéré
-    elif ft_intensity == "none":
-        score -= 5       # 0 offre 30j → peut-être gel d'embauche
+    # FRANCE TRAVAIL hiring signal — DÉSACTIVÉ v0.16.0
+    # L'API v2 ne supporte pas le filtre par SIRET (vérifié live 2026-05-26).
+    # Le signal était systematiquement faux. Aucun boost ni pénalité.
+    # Re-activer quand on aura un vrai endpoint employeur-spécifique (v0.17?).
 
     # TECH STACK signals — has-automation = AI-ready pour le niveau 3
     tech_signals = set(partial.get("tech_signals") or [])
@@ -1050,7 +1033,15 @@ def finalize_lead(
     # run_campaign sets this based on a preliminary_score(partial) check —
     # leads scoring < threshold don't get paid enrichment, saving credits.
     dc_result = None
-    if use_paid_sources and have_dropcontact_key() and person_first and person_last:
+    # v0.16.0 — Quota gate: skip Dropcontact entirely when credits exhausted.
+    # Avant: pipeline gaspillait un round-trip pour rien (compteur SQLite à 0).
+    _dc_quota_ok = True
+    try:
+        from quotas import can_call as _can_call
+        _dc_quota_ok = _can_call("dropcontact", count=1)
+    except Exception:
+        pass
+    if use_paid_sources and have_dropcontact_key() and _dc_quota_ok and person_first and person_last:
         @_cached("dropcontact", f"{person_first}|{person_last}|{partial.get('company_name', '')}")
         def _dc():
             try:

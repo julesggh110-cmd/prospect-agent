@@ -219,19 +219,43 @@ def _normalize(item: dict) -> dict:
     }
 
 
-def find_business_here(name: str, city: Optional[str] = None) -> Optional[dict]:
-    """Find the HERE Maps record for (name, city). Returns flat dict or None."""
+def find_business_here(name: str, city: Optional[str] = None, *, naf: Optional[str] = None) -> Optional[dict]:
+    """Find the HERE Maps record for (name, city). Returns flat dict or None.
+
+    v0.16.0 — Sector-aware query retry: when the legal name doesn't match
+    (Sirene's "LEMON FORMATIONS"), retry with sector-prefixed clean_name
+    ("hôtel lemon" matches "Lemon Hôtel Saint-Lazare").
+    """
     if not name or not have_here_key():
         return None
     geo = _geocode_city(city) if city else None
     if not geo:
-        # Fall back to France-wide geocode of the name itself
         return None
+    # First attempt: standard name
     items = _discover_business(name, geo[0], geo[1])
     best = _best_match(items, name, city)
-    if not best:
-        return None
-    return _normalize(best)
+    if best:
+        return _normalize(best)
+    # v0.16.0 — Retry with cleaned name + sector prefix for CHR/retail
+    try:
+        from google_places import _strip_legal_suffix, _sector_keywords_for_naf
+        clean = _strip_legal_suffix(name)
+        sector_words = _sector_keywords_for_naf(naf)
+        for word in sector_words:
+            q = f"{word} {clean}"
+            items = _discover_business(q, geo[0], geo[1])
+            best = _best_match(items, clean, city)
+            if best:
+                return _normalize(best)
+        # Try clean alone (without sector prefix)
+        if clean != name:
+            items = _discover_business(clean, geo[0], geo[1])
+            best = _best_match(items, clean, city)
+            if best:
+                return _normalize(best)
+    except Exception:
+        pass
+    return None
 
 
 def _cli() -> None:

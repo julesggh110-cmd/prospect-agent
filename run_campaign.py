@@ -105,6 +105,31 @@ def _role_priority(role: str) -> int:
     return 0
 
 
+# v0.16.0 — Cabinets d'audit / commissariat aux comptes connus.
+# Quand un nom de dirigeant matche cette liste, c'est une personne morale
+# CAC (KPMG SA, Mazars, Deloitte, etc.) — pas un humain joignable.
+# Cas réel BBW-29: THERMADOUR avait person_name="Kpmg S.a".
+_KNOWN_AUDIT_FIRMS = {
+    "kpmg", "mazars", "deloitte", "ey", "ernst", "pwc", "pricewaterhouse",
+    "grant thornton", "bdo", "rsm", "bm&a", "exco", "fiducial",
+    "in extenso", "sefac", "advance", "axion", "barale", "becouze",
+    "calan ramolino", "cofineg", "compagnie fiduciaire", "constantin",
+    "exponens", "fidulor", "fitexco", "michel creuzot", "mga", "ofica",
+    "orfis", "ratp dev", "sec ouest", "sefiges", "tgs france",
+}
+
+
+def _name_looks_like_audit_firm(name: str) -> bool:
+    """True if the cleaned name matches a known FR audit / CAC firm."""
+    if not name:
+        return False
+    import re, unicodedata
+    n = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    n = re.sub(r"\b(s\.?a\.?|sas|sasu|sarl|eurl|sca|llp|inc|gmbh|ltd)\b\.?", "", n)
+    n = re.sub(r"\s+", " ", n).strip()
+    return any(firm in n for firm in _KNOWN_AUDIT_FIRMS)
+
+
 def _sort_dirigeants_by_decisionmaker_priority(dirs: list[dict]) -> list[dict]:
     """Stable-sort the dirigeants list so the highest-tier decision-makers
     come first. Auditors and censeurs are pushed to the bottom (tier -1).
@@ -118,8 +143,12 @@ def _sort_dirigeants_by_decisionmaker_priority(dirs: list[dict]) -> list[dict]:
         # We sort ASCENDING. So smaller keys come FIRST.
         # → real humans: key = (-tier, 0). Higher tier = smaller key = first.
         # → personnes morales: key = (+infinity, 0) → always last.
+        # v0.16.0 → audit firms (KPMG, Mazars…): key = (+infinity*2, 0) → after PM.
+        full_name = d.get("name") or d.get("raw_name") or ""
+        if _name_looks_like_audit_firm(full_name):
+            return (20_000, 0)
         if d.get("is_personne_morale"):
-            return (10_000, 0)     # very large → always last
+            return (10_000, 0)
         return (-_role_priority(d.get("role", "")), 0)
     return sorted(dirs, key=_key)
 
@@ -385,6 +414,19 @@ def run(
             flags = p.get("quality_flags") or []
             if any(f.startswith("foreign-subsidiary:") for f in flags):
                 return False, "foreign-subsidiary"
+            # v0.16.0 — strict premium gates (CHR mode)
+            if args.require_gmb:
+                gmb = p.get("gmb") or {}
+                if not (gmb.get("rating") or p.get("cuisine_type")):
+                    return False, "no GMB enrichment (--require-gmb)"
+            if args.min_gmb_rating is not None:
+                r = p.get("gmb_rating")
+                if r is None or float(r) < float(args.min_gmb_rating):
+                    return False, f"GMB rating {r} < {args.min_gmb_rating}"
+            if args.min_gmb_reviews is not None:
+                rc = p.get("gmb_rating_count")
+                if rc is None or int(rc) < int(args.min_gmb_reviews):
+                    return False, f"GMB reviews {rc} < {args.min_gmb_reviews}"
             return True, "ok"
 
         partials: list = []
@@ -841,6 +883,19 @@ def _cli() -> None:
                    help="Generate a 3-touch sequence (J0 cold + J+4 follow-up "
                         "+ J+10 break-up) per lead. Requires --generate-emails. "
                         "Multiplies response rate by 3-4×. ~$0.005/lead.")
+    # v0.16.0 — strict premium mode for CHR
+    p.add_argument("--require-gmb", action="store_true",
+                   help="Drop any lead with no GMB rating/cuisine_type enriched. "
+                        "Recommended for CHR (cafés/hôtels/restaurants) campaigns "
+                        "where 'haut de gamme' = strict GMB filtering. Without this, "
+                        "leads with empty GMB pass the preset and inflate the list "
+                        "with false positives (holdings, legal entities).")
+    p.add_argument("--min-gmb-rating", type=float, default=None,
+                   help="Minimum GMB rating (e.g. 4.3 for haut de gamme). Drops "
+                        "leads below threshold. Use with --require-gmb.")
+    p.add_argument("--min-gmb-reviews", type=int, default=None,
+                   help="Minimum GMB review count (e.g. 100 for premium signal). "
+                        "Drops leads below threshold. Use with --require-gmb.")
     # v0.15.0 — appels d'offres
     p.add_argument("--rfp-keywords",
                    help="Comma-separated FR keywords to search BOAMP (appels "
@@ -927,6 +982,19 @@ def _cli() -> None:
             p.error("--generate-emails requires both --sender-company and "
                     "--sender-offer (the agent has NO default sender — it must "
                     "be specified per campaign).")
+
+    # v0.16.0 — Fail-fast Anthropic. 3 flags requièrent ANTHROPIC_API_KEY.
+    # Sans la clé, autant abort dès maintenant plutôt que faire tourner
+    # le pipeline pendant 10 min pour découvrir que l'email gen a échoué.
+    import os as _os
+    if (args.generate_emails or args.multi_touch or args.icp_description) \
+            and not _os.environ.get("ANTHROPIC_API_KEY"):
+        p.error(
+            "ANTHROPIC_API_KEY missing from environment. The following flags "
+            "REQUIRE Claude Haiku: --generate-emails, --multi-touch, "
+            "--icp-description. Either add the key to .env (get one at "
+            "https://console.anthropic.com/settings/keys, $5 free credit) "
+            "or remove these flags.")
 
     # Parse v0.15 RFP flags
     rfp_keywords = (

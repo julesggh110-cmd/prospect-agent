@@ -159,6 +159,36 @@ def fetch_offres_by_siret(siret: str, *, since_days: int = 30) -> Optional[dict]
 
 
 def hiring_signal_for_siret(siret: str, *, since_days: int = 30, naf: Optional[str] = None) -> dict:
+    """v0.16.0 — DÉSACTIVÉ. L'API France Travail v2 n'accepte AUCUN filtre par
+    SIRET ou SIREN (param `entreprise.siret` est ignoré, retourne toute la base
+    nationale ~424k offres). Tous les leads recevaient donc faussement
+    n_offres=150 + intensity=saturated.
+
+    Vérifié live 2026-05-26 : 3 SIRETs différents (Carrefour, Le Procope, Ritz)
+    → résultats strictement identiques. Le filtre `entreprise.siret` est mort.
+
+    Pour v0.17 : envisager le sourcing INVERSE (récupérer les SIRENs des
+    employeurs qui ont publié récemment dans un secteur+région) — c'est un
+    autre paradigme (sourcing vs enrichment).
+
+    Pour l'instant : retourne toujours intensity='unavailable' avec
+    icp_modifier=0 pour ne plus polluer le scoring.
+    """
+    return {
+        "siret": siret,
+        "n_offres": 0,
+        "n_offres_total": 0,
+        "hiring_intensity": "unavailable",
+        "is_saturated": False,
+        "top_rome_codes": [],
+        "top_titles": [],
+        "icp_modifier": 0,
+        "since_days": since_days,
+        "reason": "FT API v2 ne supporte pas le filtre par SIRET (disabled v0.16.0)",
+    }
+
+
+def _legacy_hiring_signal_disabled(siret: str, *, since_days: int = 30, naf: Optional[str] = None) -> dict:
     """Classify hiring activity for a SIRET into a single signal dict.
 
     v0.15.1 — detects "HQ aggregation": when the API returns a very large

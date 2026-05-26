@@ -227,27 +227,103 @@ def _best_match(
     return best
 
 
+def _strip_legal_suffix(name: str) -> str:
+    """Drop noisy legal suffixes from a Sirene name so GMB search hits.
+    Ex: 'LEMON FORMATIONS' → 'LEMON', 'THE RITZ HOTEL LIMITED' → 'THE RITZ',
+        'PRINTEMPS FOOD SAS' → 'PRINTEMPS'.
+    """
+    if not name:
+        return name
+    import re
+    n = name
+    # Common legal forms
+    n = re.sub(r"\b(SAS|SASU|SARL|EURL|SA|SNC|SCOP|SCIC|SCP|SELAS|SELARL|SCI|LIMITED|LTD|INC|GMBH)\b\.?",
+               "", n, flags=re.IGNORECASE)
+    # Common sector noise (when name is "X FORMATIONS" or "X HOTELS")
+    n = re.sub(r"\b(FORMATIONS?|HOTELS?|HÔTELS?|RESTAURANTS?|RESTAURATION|CAFE|CAFÉ|GROUP|GROUPE|HOLDING|INTERNATIONAL)\b",
+               "", n, flags=re.IGNORECASE)
+    n = re.sub(r"\s+", " ", n).strip()
+    # Don't return empty — if everything got stripped, fall back to original
+    return n if len(n) >= 3 else name
+
+
+# v0.16.0 — Sector keywords for CHR-style search queries
+_NAF_SECTOR_KEYWORDS = {
+    "56.10": ["restaurant"],          # restauration traditionnelle
+    "56.30": ["bar", "café"],          # débits de boisson
+    "55.10": ["hôtel"],                 # hôtels
+    "47.25": ["caviste"],               # cavistes
+    "96.02": ["coiffeur", "salon"],    # coiffure
+    "47.71": ["boutique"],              # textile / vêtements
+    "10.71": ["boulangerie"],
+    "86.21": ["cabinet médical"],
+    "86.22": ["clinique"],
+}
+
+
+def _sector_keywords_for_naf(naf: Optional[str]) -> list[str]:
+    """Return search prefixes (e.g. 'restaurant', 'hôtel') for a NAF code."""
+    if not naf:
+        return []
+    for prefix, words in _NAF_SECTOR_KEYWORDS.items():
+        if naf.startswith(prefix):
+            return words
+    return []
+
+
 def find_business_place(
     name: str,
     city: Optional[str] = None,
+    *,
+    naf: Optional[str] = None,
 ) -> Optional[dict]:
     """Find the Google My Business entry for (name, city).
 
     Returns a dict (Serper place schema) or None on no confident match.
     Caller should expect any of these keys to be missing.
+
+    v0.16.0 — Adds sector-aware query variants when `naf` is provided.
+    For a CHR lead "LEMON FORMATIONS" with naf=55.10Z, also tries
+    "hôtel LEMON paris" which matches "Lemon Hôtel Saint-Lazare" on Google.
     """
     if not name:
         return None
+    clean_name = _strip_legal_suffix(name)
+    sector_words = _sector_keywords_for_naf(naf)
+
     queries = []
+    # Standard queries first (fast path for clean names)
     if city:
         queries.append(f"{name} {city}")
+        if clean_name != name:
+            queries.append(f"{clean_name} {city}")
+        # v0.16.0 — sector-prefixed variants for CHR/retail (where the legal
+        # name often differs from the operational brand name on Google Maps)
+        for word in sector_words:
+            queries.append(f"{word} {clean_name} {city}")
     queries.append(name)
+    if clean_name != name:
+        queries.append(clean_name)
 
+    # Dedup while preserving order
+    seen = set()
+    unique_queries = []
     for q in queries:
+        if q not in seen:
+            seen.add(q)
+            unique_queries.append(q)
+
+    for q in unique_queries:
         places = _query_places(q, max_results=5)
         match = _best_match(places, name, city)
         if match:
             return match
+        # Also try matching against the clean_name (which is what Google
+        # actually has in its DB for brand-led places)
+        if clean_name != name:
+            match = _best_match(places, clean_name, city)
+            if match:
+                return match
     return None
 
 
