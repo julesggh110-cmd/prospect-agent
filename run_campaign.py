@@ -154,6 +154,72 @@ def _name_looks_like_audit_firm(name: str) -> bool:
     return False
 
 
+# v0.16.3 — Cohérence NAF vs cuisine_type (HERE/GMB).
+# Cas réel BBW-33: une entreprise déclarée NAF 47.25Z (caviste) mais HERE
+# la classe comme "Bed & Breakfast" → activité réelle ≠ déclaration Sirene.
+# On rejette ces incohérences pour éviter les faux positifs en CHR.
+#
+# Pour chaque famille NAF, on définit:
+#  - require_any: au moins UN de ces mots doit être dans cuisine_type
+#  - forbid_any:  AUCUN de ces mots ne doit y être (signal contradictoire)
+# Si cuisine_type est vide / inconnu → on passe (pas de signal contraire).
+_NAF_CUISINE_RULES: dict[str, dict[str, list[str]]] = {
+    # Cavistes (47.25Z)
+    "47.25": {
+        "require_any": ["vin", "spiritueux", "domaine", "caviste", "cave",
+                         "alcool", "champagne", "wine"],
+        "forbid_any":  ["b&b", "bed and breakfast", "bed & breakfast",
+                         "hôtel", "hotel", "restaurant", "café", "cafe"],
+    },
+    # Restauration traditionnelle (56.10A)
+    "56.10": {
+        "require_any": ["restaurant", "brasserie", "bistro", "gastrono",
+                         "café", "cafe", "italien", "français", "francais"],
+        "forbid_any":  ["hôtel", "b&b", "bed and breakfast", "boulang",
+                         "patisser", "boucher", "supermarché", "épicerie"],
+    },
+    # Hôtels (55.10Z)
+    "55.10": {
+        "require_any": ["hôtel", "hotel", "auberge", "lodge", "palace",
+                         "b&b", "bed and breakfast"],
+        "forbid_any":  ["restaurant", "boulang", "supermarché", "épicerie"],
+    },
+    # Bars / débits de boissons (56.30Z)
+    "56.30": {
+        "require_any": ["bar", "café", "cafe", "pub", "cocktail", "brasserie",
+                         "lounge", "wine"],
+        "forbid_any":  ["restaurant gastrono", "boulang", "supermarché"],
+    },
+}
+
+
+def _naf_cuisine_consistent(naf: str | None, cuisine_type: str | None) -> bool:
+    """Return False if the NAF and GMB/HERE cuisine_type are CONTRADICTORY.
+    Return True if consistent or if we have no signal to judge."""
+    if not naf or not cuisine_type:
+        return True  # no signal, accept
+    c = (cuisine_type or "").lower()
+    for prefix, rules in _NAF_CUISINE_RULES.items():
+        if not naf.startswith(prefix):
+            continue
+        # Forbid wins immediately: contradiction caught
+        if any(kw in c for kw in rules.get("forbid_any", [])):
+            return False
+        # Require: if cuisine_type mentions none of the expected keywords AND
+        # mentions something else, flag mismatch. If cuisine_type is super
+        # generic (e.g. "Établissement", "Entreprise"), let it pass.
+        if rules.get("require_any"):
+            if not any(kw in c for kw in rules["require_any"]):
+                # Cuisine talks about something else (not generic) → mismatch
+                # Generic terms that we let pass:
+                generic = ["établissement", "etablissement", "entreprise",
+                           "commerce", "société", "societe", "magasin"]
+                if not any(g in c for g in generic):
+                    return False
+        return True  # passed
+    return True  # NAF not in our coherence map → accept
+
+
 def _sort_dirigeants_by_decisionmaker_priority(dirs: list[dict]) -> list[dict]:
     """Stable-sort the dirigeants list so the highest-tier decision-makers
     come first. Auditors and censeurs are pushed to the bottom (tier -1).
@@ -246,6 +312,8 @@ def run(
     require_gmb: bool = False,
     min_gmb_rating: float | None = None,
     min_gmb_reviews: int | None = None,
+    # v0.16.3 — strict variant (rating-only, not just cuisine)
+    require_gmb_rating: bool = False,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -447,6 +515,10 @@ def run(
                 gmb = p.get("gmb") or {}
                 if not (gmb.get("rating") or p.get("cuisine_type")):
                     return False, "no GMB enrichment (--require-gmb)"
+            # v0.16.3 — strict variant: rating ONLY (cuisine_type insuffisant)
+            if require_gmb_rating:
+                if not p.get("gmb_rating"):
+                    return False, "no GMB rating (--require-gmb-rating)"
             if min_gmb_rating is not None:
                 r = p.get("gmb_rating")
                 if r is None or float(r) < float(min_gmb_rating):
@@ -455,6 +527,16 @@ def run(
                 rc = p.get("gmb_rating_count")
                 if rc is None or int(rc) < int(min_gmb_reviews):
                     return False, f"GMB reviews {rc} < {min_gmb_reviews}"
+            # v0.16.3 — NAF/cuisine_type coherence guardrail
+            # Cas réel BBW-33: ROXANE ET CYRANO listé NAF 47.25Z (caviste)
+            # mais cuisine_type HERE = "Bed & Breakfast" → activité réelle ≠ NAF.
+            # On rejette si le NAF dit "X" et le cuisine_type dit franchement
+            # autre chose (B&B alors qu on cherche un caviste, par exemple).
+            if not _naf_cuisine_consistent(p.get("naf"), p.get("cuisine_type")):
+                return False, (
+                    f"naf/cuisine mismatch: NAF={p.get('naf')} "
+                    f"vs cuisine={p.get('cuisine_type')}"
+                )
             return True, "ok"
 
         partials: list = []
@@ -598,9 +680,14 @@ def run(
     prelim_scores: list[tuple[int, str]] = []
     n_paid = 0
     n_cheap = 0
+    # v0.16.3 — track silent drops between qualif and finalize stage
+    # (BBW-33: 1 lead lost between "8/8 qualified" and "7 stored").
+    n_skipped_no_dirs = 0
+    n_skipped_no_name = 0
     for p in partials:
         dirs = p.get("legal_dirigeants") or []
         if not dirs:
+            n_skipped_no_dirs += 1
             continue
 
         chosen_first, chosen_last, chosen_role = None, None, None
@@ -632,6 +719,7 @@ def run(
             if not chosen_first or not chosen_last:
                 parts = (d.get("name") or "").split()
                 if len(parts) < 2:
+                    n_skipped_no_name += 1   # v0.16.3 — track silent drop
                     continue
                 chosen_first = chosen_first or parts[0]
                 chosen_last = chosen_last or parts[-1]
@@ -664,6 +752,14 @@ def run(
         print(f"[Two-pass] {n_paid}/{n_paid + n_cheap} leads above paid threshold "
               f"(>={paid_threshold}) → will hit paid waterfall; "
               f"{n_cheap} get cheap pass only.")
+    # v0.16.3 — report silent drops between qualif and finalize (BBW-33)
+    if n_skipped_no_dirs or n_skipped_no_name:
+        print(f"[Pre-finalize] {n_skipped_no_dirs + n_skipped_no_name} qualified "
+              f"leads SKIPPED before finalize: "
+              f"{n_skipped_no_dirs} had no dirigeants · "
+              f"{n_skipped_no_name} had no nominatif name "
+              f"(résolution: ces leads passaient le quality gate mais sont "
+              f"impossibles à finaliser sans personne identifiée).")
 
     # LAUNCH Dropcontact batch IN BACKGROUND, overlap with parallel finalize.
     # Previously the DC batch was BLOCKING (~30s polling), then finalize ran
@@ -733,7 +829,27 @@ def run(
                 1 for v in batch_result.values()
                 if v.get("email") or v.get("phone")
             )
-            print(f"[Dropcontact] background batch done: {n_with_data}/{len(batch_result)} returned data")
+            # v0.16.3 — clearer logging: distinguish "empty input" / "quota dead"
+            # / "real 0 matches" cases so the user knows what's happening.
+            n_input = len(batch_result)
+            if n_input == 0:
+                # Try to figure out why — check quota state
+                try:
+                    from quotas import can_call as _qcan, remaining as _qrem
+                    if not _qcan("dropcontact", 1):
+                        rem = _qrem("dropcontact")
+                        print(f"[Dropcontact] background batch SKIPPED: "
+                              f"quota exhausted ({rem} credits left)")
+                    else:
+                        print(f"[Dropcontact] background batch done: 0 leads "
+                              f"sent (no eligible leads above paid_threshold or "
+                              f"DC client unavailable)")
+                except Exception:
+                    print(f"[Dropcontact] background batch done: 0/0 returned data "
+                          f"(0 leads sent)")
+            else:
+                print(f"[Dropcontact] background batch done: "
+                      f"{n_with_data}/{n_input} returned data")
         except Exception as e:
             print(f"[Dropcontact] background batch error: {e}")
     _dc_executor.shutdown(wait=True)
@@ -959,17 +1075,21 @@ def _cli() -> None:
                         "Multiplies response rate by 3-4×. ~$0.005/lead.")
     # v0.16.0 — strict premium mode for CHR
     p.add_argument("--require-gmb", action="store_true",
-                   help="Drop any lead with no GMB rating/cuisine_type enriched. "
-                        "Recommended for CHR (cafés/hôtels/restaurants) campaigns "
-                        "where 'haut de gamme' = strict GMB filtering. Without this, "
-                        "leads with empty GMB pass the preset and inflate the list "
-                        "with false positives (holdings, legal entities).")
+                   help="Drop any lead with NO GMB enrichment AT ALL (no rating "
+                        "AND no cuisine_type). Permissive — passes via cuisine_type "
+                        "alone (HERE fallback). Use for basic CHR validation.")
+    # v0.16.3 — strict variant (rating only, not cuisine alone)
+    p.add_argument("--require-gmb-rating", action="store_true",
+                   help="STRICT premium: drop any lead without a GMB rating value "
+                        "(not just cuisine_type). Requires Google Places quota to "
+                        "work (HERE has no rating). Use for 'vraiment haut de gamme' "
+                        "campaigns where rating discrimination is critical.")
     p.add_argument("--min-gmb-rating", type=float, default=None,
                    help="Minimum GMB rating (e.g. 4.3 for haut de gamme). Drops "
-                        "leads below threshold. Use with --require-gmb.")
+                        "leads below threshold. Use with --require-gmb-rating.")
     p.add_argument("--min-gmb-reviews", type=int, default=None,
                    help="Minimum GMB review count (e.g. 100 for premium signal). "
-                        "Drops leads below threshold. Use with --require-gmb.")
+                        "Drops leads below threshold.")
     # v0.15.0 — appels d'offres
     p.add_argument("--rfp-keywords",
                    help="Comma-separated FR keywords to search BOAMP (appels "
@@ -1114,6 +1234,7 @@ def _cli() -> None:
         require_gmb=args.require_gmb,
         min_gmb_rating=args.min_gmb_rating,
         min_gmb_reviews=args.min_gmb_reviews,
+        require_gmb_rating=args.require_gmb_rating,
     )
 
 
