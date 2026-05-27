@@ -464,13 +464,25 @@ def run(
         # Au lieu de partir de Sirene NAF (administratif), on part d'une
         # vraie recherche sémantique pour trouver les boîtes qui MATCHENT
         # le profil business voulu, pas seulement le code NAF.
-        if not target_icp_description:
-            print("[ReverseSource] --reverse-source requires --icp-description "
-                  "(natural language description of your target profile).")
-            sys.exit(1)
+        #
+        # v0.19.2 — fix BBW-38: si pas de --icp-description (Anthropic absent),
+        # synthétiser une mini-ICP depuis NAF + dept pour ne pas bloquer.
+        effective_icp = target_icp_description
+        if not effective_icp:
+            from reverse_sourcing import synthesize_icp_from_filters
+            effective_icp = synthesize_icp_from_filters(
+                naf=naf, departement=departement, region=region,
+                tranche_effectif=tranche_effectif, query=query,
+            )
+            if not effective_icp:
+                print("[ReverseSource] --reverse-source requires either "
+                      "--icp-description, or at least --naf / --query for "
+                      "fallback synthesis. None provided.")
+                sys.exit(1)
+            print(f"[ReverseSource] Synthesized ICP from filters:\n  '{effective_icp}'")
         from reverse_sourcing import reverse_source
         candidates = reverse_source(
-            target_icp_description,
+            effective_icp,
             n_queries=5,
             max_results_per_query=15,
             max_total=max(volume * 3, 30),

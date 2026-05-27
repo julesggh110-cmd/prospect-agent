@@ -96,12 +96,35 @@ _AGGREGATORS = {
 }
 
 
+# v0.19.2 — URL path patterns qui révèlent une page éditoriale (blog/article/
+# tutoriel/comparatif) plutôt que la home d'une entreprise cible. Quand l'URL
+# matche un de ces patterns, c'est presque toujours un faux positif.
+_EDITORIAL_PATH_PATTERNS = [
+    "/article/", "/articles/", "/blog/", "/blogs/", "/news/", "/actualite",
+    "/actualites/", "/fiches-pratiques/", "/fiche-pratique/", "/guide/",
+    "/guides/", "/tutoriel/", "/tutorial/", "/comparatif/", "/avis/",
+    "/test/", "/dossier/", "/dossiers/", "/conseils/", "/lexique/",
+    "/wiki/", "/post/", "/posts/", "/category/", "/categories/",
+    "/tag/", "/tags/", "/topic/", "/topics/", "/livre-blanc",
+    "/whitepaper", "/webinar", "/podcast", "/ebook",
+]
+
+
 def _is_business_url(url: str) -> bool:
-    """True si l'URL ressemble à un VRAI site d'entreprise (pas aggregator)."""
+    """True si l'URL ressemble à un VRAI site d'entreprise (pas aggregator,
+    pas un article de blog/media).
+
+    v0.19.2 — filtre aussi sur le PATH pour rejeter les articles/blogs/guides
+    qui sont des contenus éditoriaux et non des homepages d'entreprise cible.
+    Cas réels vus en BBW-38: legalstart.fr/article/, hello-pomelo.fr/conseils/,
+    orki.green/post/ — tous renvoient un SIREN d'éditeur, pas un cabinet.
+    """
     if not url:
         return False
     try:
-        host = (urlparse(url).hostname or "").lower().removeprefix("www.")
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        path = (parsed.path or "").lower()
     except Exception:
         return False
     if not host or "." not in host:
@@ -110,7 +133,118 @@ def _is_business_url(url: str) -> bool:
     for agg in _AGGREGATORS:
         if host == agg or host.endswith("." + agg):
             return False
+    # v0.19.2 — Reject editorial pages (blog/article/guide patterns)
+    for pat in _EDITORIAL_PATH_PATTERNS:
+        if pat in path:
+            return False
     return True
+
+
+# v0.19.2 — Fallback synthèse ICP depuis filtres NAF/dept quand pas Anthropic.
+# Tirée d'une mini-table NAF→libellé business pour les codes les plus
+# couramment utilisés par les campagnes prospect-agent. Pas exhaustif mais
+# couvre le 80/20.
+_NAF_LIBELLES: dict[str, str] = {
+    "62.01": "société de programmation informatique / ESN",
+    "62.02": "société de conseil en systèmes informatiques",
+    "62.03": "société de gestion d'installations informatiques",
+    "62.09": "société d'autres services informatiques",
+    "63.11": "société de traitement de données / hébergement",
+    "70.10": "société de holding",
+    "70.21": "cabinet de conseil en relations publiques",
+    "70.22": "cabinet de conseil aux entreprises",
+    "71.12": "société d'ingénierie / études techniques",
+    "72.19": "société de R&D en sciences appliquées",
+    "73.20": "cabinet d'études de marché",
+    "78.10": "agence de placement / RH",
+    "78.30": "société de mise à disposition de personnel",
+    "85.59": "organisme de formation continue",
+    "86.21": "cabinet médical",
+    "86.22": "spécialiste hospitalier / clinique",
+    "55.10": "hôtel",
+    "56.10": "restaurant",
+    "56.30": "bar / débit de boissons",
+    "47.25": "caviste / commerce de vins et spiritueux",
+    "47.71": "boutique vêtements",
+    "10.71": "boulangerie / pâtisserie",
+    "30.30": "société aéronautique / spatiale",
+    "20.42": "société de cosmétiques",
+    "21.20": "laboratoire pharmaceutique",
+    "35.11": "producteur d'électricité",
+    "49.41": "société de transport routier",
+    "52.29": "société de logistique / fret",
+    "64.19": "banque",
+    "65.": "société d'assurance",
+    "66.": "société auxiliaire de finance / assurance",
+    "69.10": "cabinet d'avocats",
+    "69.20": "cabinet d'expertise comptable",
+}
+
+_DEPT_REGION: dict[str, str] = {
+    "75": "Paris", "92": "Hauts-de-Seine", "93": "Seine-Saint-Denis",
+    "94": "Val-de-Marne", "78": "Yvelines", "91": "Essonne", "77": "Seine-et-Marne",
+    "95": "Val-d'Oise", "69": "Lyon / Rhône", "13": "Marseille / Bouches-du-Rhône",
+    "33": "Bordeaux / Gironde", "31": "Toulouse / Haute-Garonne",
+    "44": "Nantes / Loire-Atlantique", "35": "Rennes / Ille-et-Vilaine",
+    "59": "Lille / Nord", "67": "Strasbourg / Bas-Rhin",
+    "06": "Nice / Alpes-Maritimes", "34": "Montpellier / Hérault",
+}
+
+
+def synthesize_icp_from_filters(
+    *,
+    naf: Optional[str] = None,
+    departement: Optional[str] = None,
+    region: Optional[str] = None,
+    tranche_effectif: Optional[str] = None,
+    query: Optional[str] = None,
+) -> Optional[str]:
+    """Synthétise une description ICP courte depuis les filtres CLI Sirene.
+
+    Utilisé par run_campaign --reverse-source quand l'utilisateur n'a pas
+    de --icp-description (parce que Anthropic n'est pas dispo). On bricole
+    une mini-description recyclable comme query Google.
+    """
+    parts: list[str] = []
+    # Type business depuis NAF
+    if naf:
+        # Le naf peut être "70.22Z,62.02A" — on prend le premier
+        first_naf = naf.split(",")[0].strip()
+        for prefix, libelle in _NAF_LIBELLES.items():
+            if first_naf.startswith(prefix):
+                parts.append(libelle)
+                break
+        if not parts:
+            parts.append(f"entreprise NAF {first_naf}")
+    elif query:
+        parts.append(query)
+    # Géo depuis dept
+    if departement:
+        first_dept = departement.split(",")[0].strip()
+        loc = _DEPT_REGION.get(first_dept, f"département {first_dept}")
+        parts.append(loc)
+    elif region:
+        parts.append(region.split(",")[0].strip())
+    else:
+        parts.append("France")
+    # Taille
+    if tranche_effectif:
+        first_tr = tranche_effectif.split(",")[0].strip()
+        if first_tr in ("01", "02", "03"):
+            parts.append("TPE moins de 10 salariés")
+        elif first_tr in ("11", "12"):
+            parts.append("PME 10-49 salariés")
+        elif first_tr in ("21", "22"):
+            parts.append("PME 50-199 salariés")
+        elif first_tr in ("31", "32"):
+            parts.append("ETI 200-499 salariés")
+        elif first_tr in ("41", "42"):
+            parts.append("ETI 500-1999 salariés")
+        elif first_tr in ("51", "52", "53"):
+            parts.append("grande entreprise 2000+ salariés")
+    if not parts:
+        return None
+    return " ".join(parts)
 
 
 def _extract_company_name(url: str) -> Optional[str]:
