@@ -53,6 +53,14 @@ HEADERS = [
     "person_linkedin", "person_linkedin_conf",
     "person_instagram", "person_instagram_conf",
     "overall_score",
+    # v0.17.0 — LLM Lead Reasoner verdict (analyse business sémantique)
+    "llm_fit_score",         # 0-100 score de fit business calculé par Claude
+    "llm_verdict",           # STRONG_FIT / POSSIBLE_FIT / POOR_FIT / DROP
+    "llm_reasoning",         # 1-3 phrases qui expliquent le verdict
+    "llm_red_flags",         # ce qui ne va pas
+    "llm_green_flags",       # ce qui matche
+    "llm_persona_guess",     # meilleur persona à contacter d'après le raisonnement
+    "llm_confidence",        # high / medium / low
     # v0.14.0 — France Travail hiring signal (boîte qui recrute = budget IA)
     "ft_hiring_intensity",   # high / medium / low / none / ""
     "ft_n_offres",           # # offres in last 30 days
@@ -139,6 +147,14 @@ def _row_for(lead) -> list:  # `lead` is a triangulation.Lead but we keep this l
         *scored(lead.person_linkedin),
         *scored(lead.person_instagram),
         lead.overall_score,
+        # v0.17.0 — LLM Lead Reasoner
+        getattr(lead, "llm_fit_score", "") or "",
+        getattr(lead, "llm_verdict", "") or "",
+        getattr(lead, "llm_reasoning", "") or "",
+        getattr(lead, "llm_red_flags", "") or "",
+        getattr(lead, "llm_green_flags", "") or "",
+        getattr(lead, "llm_persona_guess", "") or "",
+        getattr(lead, "llm_confidence", "") or "",
         # v0.14.0 — France Travail hiring signal
         getattr(lead, "ft_hiring_intensity", "") or "",
         getattr(lead, "ft_n_offres", "") or "",

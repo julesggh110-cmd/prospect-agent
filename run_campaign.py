@@ -314,6 +314,8 @@ def run(
     min_gmb_reviews: int | None = None,
     # v0.16.3 — strict variant (rating-only, not just cuisine)
     require_gmb_rating: bool = False,
+    # v0.17.0 — LLM lead reasoner (analyse business sémantique par lead)
+    icp_strict_llm: bool = False,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -876,6 +878,67 @@ def run(
         print(f"[ICP] '{icp.get('name','?')}' applied. Top score: "
               f"{max((l.icp_score for l in leads), default=0)}")
 
+    # 3b-bis. v0.17.0 — LLM Lead Reasoner (analyse business sémantique)
+    # Le scoring ICP statique mesure les CHAMPS. Le reasoner LLM mesure
+    # le FIT BUSINESS RÉEL (lit le site, raisonne, drop les faux positifs).
+    # Activé via --icp-strict-llm + nécessite ANTHROPIC_API_KEY.
+    if icp_strict_llm and target_icp_description:
+        from lead_reasoner import reason_about_lead, should_keep_lead
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            print("[Reasoner] ANTHROPIC_API_KEY missing — skipping LLM reasoning.")
+        else:
+            print(f"[Reasoner] Analyzing {len([l for l in leads if not l.dropped])} "
+                  f"kept leads with Claude Haiku...")
+            n_dropped_by_llm = 0
+            n_analyzed = 0
+            for lead in leads:
+                if lead.dropped:
+                    continue
+                # Reconstruire un partial-like dict depuis le lead
+                partial_like = {
+                    "company_name": lead.company_name,
+                    "naf": lead.company_naf,
+                    "city": lead.company_city,
+                    "size": lead.company_size,
+                    "website": lead.company_website,
+                    "address": lead.company_address,
+                    "cuisine_type": getattr(lead, "cuisine_type", None),
+                    "gmb_rating": getattr(lead, "gmb_rating", None),
+                    "gmb_rating_count": getattr(lead, "gmb_rating_count", None),
+                    "tech_stack": getattr(lead, "tech_stack", None),
+                    "primary_cms": getattr(lead, "primary_cms", None),
+                    "company_linkedin": lead.company_linkedin.model_dump() if lead.company_linkedin else None,
+                    "legal_dirigeants": getattr(lead, "legal_dirigeants", None) or [],
+                    "lifecycle_stage": getattr(lead, "lifecycle_stage", None),
+                    "company_age_months": getattr(lead, "company_age_months", None),
+                    "bodacc_verdict": getattr(lead, "bodacc_verdict", None),
+                    "web_enrichment": getattr(lead, "web_enrichment_dump", None) or {},
+                }
+                verdict = reason_about_lead(partial_like, target_icp_description)
+                n_analyzed += 1
+                if not verdict:
+                    continue
+                # Stick the verdict on the lead for XLSX export
+                setattr(lead, "llm_fit_score", verdict.get("fit_score"))
+                setattr(lead, "llm_verdict", verdict.get("verdict"))
+                setattr(lead, "llm_reasoning", verdict.get("reasoning"))
+                setattr(lead, "llm_red_flags", " · ".join(verdict.get("red_flags") or []))
+                setattr(lead, "llm_green_flags", " · ".join(verdict.get("green_flags") or []))
+                setattr(lead, "llm_persona_guess", verdict.get("best_persona_guess"))
+                setattr(lead, "llm_confidence", verdict.get("confidence"))
+                # Drop if LLM says NO
+                if not should_keep_lead(verdict, min_score=60):
+                    lead.dropped = True
+                    lead.drop_reason = (
+                        f"LLM REASONER: {verdict.get('verdict')} "
+                        f"(score {verdict.get('fit_score')}) — "
+                        f"{verdict.get('reasoning', '')[:200]}"
+                    )
+                    n_dropped_by_llm += 1
+            kept_after_llm = len([l for l in leads if not l.dropped])
+            print(f"[Reasoner] Done: {n_analyzed} analyzed, "
+                  f"{n_dropped_by_llm} dropped by LLM, {kept_after_llm} kept.")
+
     # 3c. Persist to lead_store (dedup history + ICP score saved)
     n_new, n_existing = upsert_leads(leads, campaign_id=campaign_id)
     print(f"[Store] +{n_new} new leads, {n_existing} re-seen "
@@ -1090,6 +1153,13 @@ def _cli() -> None:
     p.add_argument("--min-gmb-reviews", type=int, default=None,
                    help="Minimum GMB review count (e.g. 100 for premium signal). "
                         "Drops leads below threshold.")
+    # v0.17.0 — LLM lead reasoner (analyse business sémantique par lead)
+    p.add_argument("--icp-strict-llm", action="store_true",
+                   help="🧠 GAME-CHANGER: après enrichissement, envoie chaque lead "
+                        "à Claude Haiku qui RAISONNE sur le fit business réel "
+                        "(lit le site, analyse en 4 étapes, drop les faux positifs "
+                        "que le scoring statique laisse passer). Coût ~$0.0005/lead. "
+                        "Requiert ANTHROPIC_API_KEY + --icp-description (en NL).")
     # v0.15.0 — appels d'offres
     p.add_argument("--rfp-keywords",
                    help="Comma-separated FR keywords to search BOAMP (appels "
@@ -1235,6 +1305,7 @@ def _cli() -> None:
         min_gmb_rating=args.min_gmb_rating,
         min_gmb_reviews=args.min_gmb_reviews,
         require_gmb_rating=args.require_gmb_rating,
+        icp_strict_llm=args.icp_strict_llm,
     )
 
 
