@@ -316,6 +316,8 @@ def run(
     require_gmb_rating: bool = False,
     # v0.17.0 — LLM lead reasoner (analyse business sémantique par lead)
     icp_strict_llm: bool = False,
+    # v0.18.0 — reverse sourcing (Google → URL → SIREN, contourne le NAF)
+    reverse_source_mode: bool = False,
 ) -> str:
     """End-to-end campaign. Returns the path of the produced CSV.
 
@@ -456,6 +458,65 @@ def run(
         with_site = sum(1 for p in partials if p.get('website'))
         print(f"[BOAMP-Enrich] {with_site}/{len(partials)} with website · "
               f"{sum(1 for p in partials if p.get('rfp_active'))} RFP-linked")
+
+    elif reverse_source_mode:
+        # v0.18.0 — Reverse sourcing: ICP NL → Google → URLs → SIREN
+        # Au lieu de partir de Sirene NAF (administratif), on part d'une
+        # vraie recherche sémantique pour trouver les boîtes qui MATCHENT
+        # le profil business voulu, pas seulement le code NAF.
+        if not target_icp_description:
+            print("[ReverseSource] --reverse-source requires --icp-description "
+                  "(natural language description of your target profile).")
+            sys.exit(1)
+        from reverse_sourcing import reverse_source
+        candidates = reverse_source(
+            target_icp_description,
+            n_queries=5,
+            max_results_per_query=15,
+            max_total=max(volume * 3, 30),
+        )
+        if not candidates:
+            print("[ReverseSource] No candidates found. Refine --icp-description "
+                  "or check SERPER_API_KEY / PAPPERS_API_KEY.")
+            sys.exit(1)
+
+        # Hydrater via Sirene pour avoir la structure complete (dirigeants, etc.)
+        from sirene_client import SireneClient
+        companies = []
+        with SireneClient() as cli:
+            for c in candidates:
+                s = c.get("siren")
+                if not s:
+                    continue
+                try:
+                    resp = cli.search(s)
+                    if resp.results:
+                        co = resp.results[0]
+                        # Forcer le website depuis le reverse-source (souvent
+                        # plus à jour que celui de Sirene)
+                        if hasattr(co, "model_dump"):
+                            co_dict = co.model_dump()
+                            co_dict["_reverse_source_website"] = c["website"]
+                            co_dict["_reverse_source_query"] = c.get("source_query")
+                            co_dict["_reverse_source_snippet"] = c.get("source_snippet")
+                            companies.append(co_dict)
+                        else:
+                            companies.append(co)
+                except Exception:
+                    continue
+        print(f"[ReverseSource→Sirene] {len(companies)}/{len(candidates)} "
+              f"hydrated from SIRENs")
+
+        if not companies:
+            print("[ReverseSource] Aucune entreprise hydratée — abort.")
+            sys.exit(1)
+
+        # Enrich + on flag tous comme reverse-sourced (pour traçabilité XLSX)
+        partials = enrich_companies_parallel(companies, max_workers=max_workers)
+        for p in partials:
+            p.setdefault("quality_flags", []).append("reverse-sourced")
+        with_site = sum(1 for p in partials if p.get('website'))
+        print(f"[ReverseSource-Enrich] {with_site}/{len(partials)} with website")
 
     elif raw_mode:
         # Legacy: fetch volume candidates, no filtering
@@ -1160,6 +1221,15 @@ def _cli() -> None:
                         "(lit le site, analyse en 4 étapes, drop les faux positifs "
                         "que le scoring statique laisse passer). Coût ~$0.0005/lead. "
                         "Requiert ANTHROPIC_API_KEY + --icp-description (en NL).")
+    # v0.18.0 — reverse sourcing (Google → URL → SIREN au lieu de Sirene NAF)
+    p.add_argument("--reverse-source", action="store_true",
+                   help="🚀 STRUCTURAL FIX: contourne le sourcing Sirene NAF "
+                        "(administratif, pollué). À la place, génère 5 requêtes "
+                        "Google depuis --icp-description, scrape les URLs des "
+                        "VRAIES boîtes qui matchent, résout vers SIREN via Pappers. "
+                        "Coût ~$0.005 (Serper) + 1 Pappers/lead. Requiert SERPER_API_KEY "
+                        "et PAPPERS_API_KEY. Combine avec --icp-strict-llm pour "
+                        "qualité MAX (sourcing pertinent + analyse business).")
     # v0.15.0 — appels d'offres
     p.add_argument("--rfp-keywords",
                    help="Comma-separated FR keywords to search BOAMP (appels "
@@ -1306,6 +1376,7 @@ def _cli() -> None:
         min_gmb_reviews=args.min_gmb_reviews,
         require_gmb_rating=args.require_gmb_rating,
         icp_strict_llm=args.icp_strict_llm,
+        reverse_source_mode=args.reverse_source,
     )
 
 
