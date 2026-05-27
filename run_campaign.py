@@ -948,57 +948,142 @@ def run(
         if not os.environ.get("ANTHROPIC_API_KEY"):
             print("[Reasoner] ANTHROPIC_API_KEY missing — skipping LLM reasoning.")
         else:
+            # v0.19.1 — Wire decision_trace + ReAct refinement
+            from decision_trace import LeadTrace, TraceWriter
+            from react_loop import refine_borderline_lead
+            import time as _t
+
+            trace_path = Path("output") / f"{output_stem or 'campaign'}-trace.jsonl"
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
             print(f"[Reasoner] Analyzing {len([l for l in leads if not l.dropped])} "
-                  f"kept leads with Claude Haiku...")
+                  f"kept leads with Claude Haiku (trace → {trace_path})...")
             n_dropped_by_llm = 0
+            n_react_refined = 0
+            n_react_flipped = 0
             n_analyzed = 0
-            for lead in leads:
-                if lead.dropped:
-                    continue
-                # Reconstruire un partial-like dict depuis le lead
-                partial_like = {
-                    "company_name": lead.company_name,
-                    "naf": lead.company_naf,
-                    "city": lead.company_city,
-                    "size": lead.company_size,
-                    "website": lead.company_website,
-                    "address": lead.company_address,
-                    "cuisine_type": getattr(lead, "cuisine_type", None),
-                    "gmb_rating": getattr(lead, "gmb_rating", None),
-                    "gmb_rating_count": getattr(lead, "gmb_rating_count", None),
-                    "tech_stack": getattr(lead, "tech_stack", None),
-                    "primary_cms": getattr(lead, "primary_cms", None),
-                    "company_linkedin": lead.company_linkedin.model_dump() if lead.company_linkedin else None,
-                    "legal_dirigeants": getattr(lead, "legal_dirigeants", None) or [],
-                    "lifecycle_stage": getattr(lead, "lifecycle_stage", None),
-                    "company_age_months": getattr(lead, "company_age_months", None),
-                    "bodacc_verdict": getattr(lead, "bodacc_verdict", None),
-                    "web_enrichment": getattr(lead, "web_enrichment_dump", None) or {},
-                }
-                verdict = reason_about_lead(partial_like, target_icp_description)
-                n_analyzed += 1
-                if not verdict:
-                    continue
-                # Stick the verdict on the lead for XLSX export
-                setattr(lead, "llm_fit_score", verdict.get("fit_score"))
-                setattr(lead, "llm_verdict", verdict.get("verdict"))
-                setattr(lead, "llm_reasoning", verdict.get("reasoning"))
-                setattr(lead, "llm_red_flags", " · ".join(verdict.get("red_flags") or []))
-                setattr(lead, "llm_green_flags", " · ".join(verdict.get("green_flags") or []))
-                setattr(lead, "llm_persona_guess", verdict.get("best_persona_guess"))
-                setattr(lead, "llm_confidence", verdict.get("confidence"))
-                # Drop if LLM says NO
-                if not should_keep_lead(verdict, min_score=60):
-                    lead.dropped = True
-                    lead.drop_reason = (
-                        f"LLM REASONER: {verdict.get('verdict')} "
-                        f"(score {verdict.get('fit_score')}) — "
-                        f"{verdict.get('reasoning', '')[:200]}"
+
+            with TraceWriter(trace_path) as trace_writer:
+                for lead in leads:
+                    if lead.dropped:
+                        continue
+                    trace = LeadTrace(
+                        siren=lead.company_siren,
+                        company_name=lead.company_name,
+                        campaign_id=campaign_id or "?",
                     )
-                    n_dropped_by_llm += 1
+                    # Reconstruire un partial-like dict depuis le lead
+                    partial_like = {
+                        "company_name": lead.company_name,
+                        "naf": lead.company_naf,
+                        "city": lead.company_city,
+                        "size": lead.company_size,
+                        "website": lead.company_website,
+                        "address": lead.company_address,
+                        "cuisine_type": getattr(lead, "cuisine_type", None),
+                        "gmb_rating": getattr(lead, "gmb_rating", None),
+                        "gmb_rating_count": getattr(lead, "gmb_rating_count", None),
+                        "tech_stack": getattr(lead, "tech_stack", None),
+                        "primary_cms": getattr(lead, "primary_cms", None),
+                        "company_linkedin": lead.company_linkedin.model_dump() if lead.company_linkedin else None,
+                        "legal_dirigeants": getattr(lead, "legal_dirigeants", None) or [],
+                        "lifecycle_stage": getattr(lead, "lifecycle_stage", None),
+                        "company_age_months": getattr(lead, "company_age_months", None),
+                        "bodacc_verdict": getattr(lead, "bodacc_verdict", None),
+                        "web_enrichment": getattr(lead, "web_enrichment_dump", None) or {},
+                    }
+                    # === Phase 1: LLM Reasoner ===
+                    t0 = _t.time()
+                    verdict = reason_about_lead(partial_like, target_icp_description)
+                    n_analyzed += 1
+                    trace.span(
+                        "llm_reasoner",
+                        duration_ms=int((_t.time() - t0) * 1000),
+                        data={"verdict_obj": verdict} if verdict else {},
+                        error=None if verdict else "no verdict (LLM error)",
+                    )
+                    if not verdict:
+                        trace.final_verdict("kept", "no LLM verdict, safe fallback kept")
+                        trace_writer.write(trace)
+                        continue
+
+                    # === Phase 2: ReAct refinement si borderline ===
+                    is_borderline = (
+                        verdict.get("verdict") == "POSSIBLE_FIT"
+                        and verdict.get("confidence") in ("low", "medium")
+                    )
+                    if is_borderline:
+                        trace.decision(
+                            "borderline_detected",
+                            decision="refine",
+                            reason=f"verdict={verdict.get('verdict')} confidence={verdict.get('confidence')}",
+                            score=verdict.get("fit_score"),
+                        )
+                        t1 = _t.time()
+                        refined_verdict, react_steps = refine_borderline_lead(
+                            partial_like, target_icp_description,
+                            original_verdict=verdict, max_turns=2,
+                        )
+                        trace.span(
+                            "react_loop",
+                            duration_ms=int((_t.time() - t1) * 1000),
+                            data={"n_steps": len(react_steps), "steps": react_steps[:10]},
+                        )
+                        n_react_refined += 1
+                        if refined_verdict and refined_verdict != verdict:
+                            old_v = verdict.get("verdict")
+                            new_v = refined_verdict.get("verdict")
+                            if old_v != new_v:
+                                n_react_flipped += 1
+                                trace.decision(
+                                    "react_flipped",
+                                    decision="flipped",
+                                    reason=f"{old_v} → {new_v}",
+                                    score=refined_verdict.get("fit_score"),
+                                )
+                            verdict = refined_verdict
+
+                    # === Phase 3: stick verdict + decide keep/drop ===
+                    setattr(lead, "llm_fit_score", verdict.get("fit_score"))
+                    setattr(lead, "llm_verdict", verdict.get("verdict"))
+                    setattr(lead, "llm_reasoning", verdict.get("reasoning"))
+                    setattr(lead, "llm_red_flags", " · ".join(verdict.get("red_flags") or []))
+                    setattr(lead, "llm_green_flags", " · ".join(verdict.get("green_flags") or []))
+                    setattr(lead, "llm_persona_guess", verdict.get("best_persona_guess"))
+                    setattr(lead, "llm_confidence", verdict.get("confidence"))
+
+                    if not should_keep_lead(verdict, min_score=60):
+                        lead.dropped = True
+                        lead.drop_reason = (
+                            f"LLM REASONER: {verdict.get('verdict')} "
+                            f"(score {verdict.get('fit_score')}) — "
+                            f"{verdict.get('reasoning', '')[:200]}"
+                        )
+                        n_dropped_by_llm += 1
+                        trace.decision(
+                            "llm_reasoner",
+                            decision="drop",
+                            reason=verdict.get("reasoning", "")[:200],
+                            score=verdict.get("fit_score"),
+                            data={"verdict": verdict.get("verdict")},
+                        )
+                        trace.final_verdict("dropped", lead.drop_reason[:300])
+                    else:
+                        trace.decision(
+                            "llm_reasoner",
+                            decision="keep",
+                            reason=verdict.get("reasoning", "")[:200],
+                            score=verdict.get("fit_score"),
+                            data={"verdict": verdict.get("verdict")},
+                        )
+                        trace.final_verdict("kept", verdict.get("reasoning", "")[:300])
+                    trace_writer.write(trace)
+
             kept_after_llm = len([l for l in leads if not l.dropped])
             print(f"[Reasoner] Done: {n_analyzed} analyzed, "
-                  f"{n_dropped_by_llm} dropped by LLM, {kept_after_llm} kept.")
+                  f"{n_react_refined} refined via ReAct "
+                  f"({n_react_flipped} verdict flipped), "
+                  f"{n_dropped_by_llm} dropped, {kept_after_llm} kept.")
+            print(f"[Trace] decision audit trail written to {trace_path}")
 
     # 3c. Persist to lead_store (dedup history + ICP score saved)
     n_new, n_existing = upsert_leads(leads, campaign_id=campaign_id)
